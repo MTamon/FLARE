@@ -19,14 +19,14 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from FLARE.config import ToolConfig
-from FLARE.converters.base import BaseAdapter
-from FLARE.converters.registry import adapter_registry
-from FLARE.extractors.base import BaseExtractor
-from FLARE.pipeline.buffer import PipelineBuffer
-from FLARE.renderers.base import BaseRenderer
-from FLARE.utils.errors import PipelineErrorHandler
-from FLARE.utils.metrics import LatencyTracker
+from flare.config import ToolConfig
+from flare.converters.base import BaseAdapter
+from flare.converters.registry import adapter_registry
+from flare.extractors.base import BaseExtractor
+from flare.pipeline.buffer import PipelineBuffer
+from flare.renderers.base import BaseRenderer
+from flare.utils.errors import PipelineErrorHandler
+from flare.utils.metrics import LatencyTracker
 
 
 class BatchPipeline:

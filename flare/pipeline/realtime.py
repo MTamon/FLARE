@@ -17,10 +17,10 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
-from FLARE.config import ToolConfig
-from FLARE.pipeline.buffer import PipelineBuffer
-from FLARE.utils.errors import PipelineErrorHandler
-from FLARE.utils.metrics import FPSCounter, LatencyTracker
+from flare.config import ToolConfig
+from flare.pipeline.buffer import PipelineBuffer
+from flare.utils.errors import PipelineErrorHandler
+from flare.utils.metrics import FPSCounter, LatencyTracker
 
 
 class RealtimePipeline:
