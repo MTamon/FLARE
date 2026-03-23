@@ -1,138 +1,233 @@
-"""AdapterRegistry: config の extractor.type / renderer.type の組み合わせから
-適切な Adapter を自動選択する。
+"""AdapterRegistry: Adapterの自動選択レジストリ。
 
-Section 8.2:
-  AdapterRegistry パターンにより、config.yaml の extractor.type と
-  renderer.type の組み合わせから適切な Adapter を自動選択する。
+config.yamlのextractor.typeとrenderer.typeの組み合わせから
+適切なAdapterを自動選択するシングルトンレジストリを提供する。
+
+登録キーは ``"{source_format}_to_{target_format}"`` の形式で生成される。
+例: ``"deca_to_flash_avatar"``、``"flame_to_pirender"``、``"identity"``。
+
+Example:
+    >>> registry = AdapterRegistry.get_instance()
+    >>>
+    >>> @registry.register
+    ... class DECAToFlameAdapter(BaseAdapter):
+    ...     ...
+    >>>
+    >>> adapter = registry.get("deca", "flash_avatar")
+    >>> # または auto_select で自動選択
+    >>> adapter = registry.auto_select("deca", "flash_avatar")
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Optional, Tuple, Type
+import threading
+from typing import Dict, List, Optional, Type
 
-from lhg_toolkit.converters.base import BaseAdapter
+from flare.converters.base import BaseAdapter
 
 
 class AdapterRegistry:
-    """(source_format, target_format) → Adapter クラスのレジストリ。
+    """Adapterクラスの登録・検索を行うシングルトンレジストリ。
 
-    使用例::
+    スレッドセーフなシングルトンパターンを採用し、アプリケーション全体で
+    単一のレジストリインスタンスを共有する。
 
-        registry = AdapterRegistry()
+    ``register()`` でAdapterクラスを登録し、``get()`` または ``auto_select()``
+    で適切なAdapterインスタンスを取得する。
 
-        # 登録（デコレータ）
-        @registry.register("deca", "flash_avatar")
-        class DECAToFlameAdapter(BaseAdapter):
-            ...
+    Attributes:
+        _instance: シングルトンインスタンス。
+        _lock: インスタンス生成時のスレッドセーフティ用ロック。
+        _adapters: 登録済みAdapterクラスのDict。
+            キーは ``"{source}_to_{target}"`` 形式。
 
-        # 取得
-        adapter_cls = registry.get("deca", "flash_avatar")
-        adapter = adapter_cls()
-
-        # 同一形式の場合は IdentityAdapter を返す
-        adapter_cls = registry.get("flash_avatar", "flash_avatar")
+    Example:
+        >>> registry = AdapterRegistry.get_instance()
+        >>> registry.list_adapters()
+        ['deca_to_flash_avatar', 'identity_to_identity']
     """
 
+    _instance: Optional[AdapterRegistry] = None
+    _lock: threading.Lock = threading.Lock()
+
     def __init__(self) -> None:
-        self._registry: Dict[Tuple[str, str], Type[BaseAdapter]] = {}
-        self._identity_factory: Optional[Callable[[], BaseAdapter]] = None
+        """レジストリを初期化する。
 
-    # ------------------------------------------------------------------
-    # 登録
-    # ------------------------------------------------------------------
-
-    def register(
-        self,
-        source_format: str,
-        target_format: str,
-    ) -> Callable[[Type[BaseAdapter]], Type[BaseAdapter]]:
-        """クラスデコレータとして使用する登録メソッド。"""
-
-        def decorator(cls: Type[BaseAdapter]) -> Type[BaseAdapter]:
-            key = (source_format.lower(), target_format.lower())
-            if key in self._registry:
-                raise ValueError(
-                    f"Adapter already registered for {key}: "
-                    f"{self._registry[key].__name__}"
-                )
-            self._registry[key] = cls
-            return cls
-
-        return decorator
-
-    def register_class(
-        self,
-        source_format: str,
-        target_format: str,
-        cls: Type[BaseAdapter],
-    ) -> None:
-        """命令的に Adapter クラスを登録する。"""
-        key = (source_format.lower(), target_format.lower())
-        if key in self._registry:
-            raise ValueError(
-                f"Adapter already registered for {key}: "
-                f"{self._registry[key].__name__}"
-            )
-        self._registry[key] = cls
-
-    def set_identity_factory(self, factory: Callable[[], BaseAdapter]) -> None:
-        """source_format == target_format の場合に返す IdentityAdapter の
-        ファクトリを設定する。"""
-        self._identity_factory = factory
-
-    # ------------------------------------------------------------------
-    # 取得
-    # ------------------------------------------------------------------
-
-    def get(
-        self,
-        source_format: str,
-        target_format: str,
-    ) -> Type[BaseAdapter]:
-        """(source_format, target_format) に対応する Adapter クラスを返す。
-
-        同一形式の場合は IdentityAdapter クラスを返す。
+        直接インスタンス化せず、``get_instance()`` を使用すること。
 
         Raises:
-            KeyError: 該当する Adapter が登録されていない場合。
+            RuntimeError: ``get_instance()`` を経由せず直接呼び出した場合。
+                ただし初回の内部呼び出しは許可される。
         """
-        src = source_format.lower()
-        tgt = target_format.lower()
+        self._adapters: Dict[str, Type[BaseAdapter]] = {}
 
-        if src == tgt:
-            if self._identity_factory is not None:
-                return type(self._identity_factory())  # type: ignore[return-value]
-            raise KeyError(
-                f"No identity adapter registered. "
-                f"Call set_identity_factory() first, or register ({src}, {tgt})."
+    @classmethod
+    def get_instance(cls) -> AdapterRegistry:
+        """シングルトンインスタンスを返す。
+
+        スレッドセーフにシングルトンインスタンスを生成・取得する。
+        初回呼び出し時にインスタンスを生成し、以降は同一インスタンスを返す。
+
+        Returns:
+            AdapterRegistryのシングルトンインスタンス。
+
+        Example:
+            >>> registry = AdapterRegistry.get_instance()
+            >>> registry is AdapterRegistry.get_instance()  # True
+        """
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """シングルトンインスタンスをリセットする。
+
+        テスト時にレジストリを初期状態に戻すために使用する。
+        本番コードでは通常使用しない。
+        """
+        with cls._lock:
+            cls._instance = None
+
+    def register(self, adapter_cls: Type[BaseAdapter]) -> Type[BaseAdapter]:
+        """Adapterクラスをレジストリに登録する。
+
+        クラスデコレータとしても使用できる。一時的にインスタンスを生成して
+        ``source_format`` と ``target_format`` を取得し、
+        ``"{source}_to_{target}"`` をキーとして登録する。
+
+        Args:
+            adapter_cls: 登録するBaseAdapterのサブクラス。
+
+        Returns:
+            引数で受け取ったadapter_clsをそのまま返す（デコレータ対応）。
+
+        Raises:
+            TypeError: adapter_clsがBaseAdapterのサブクラスでない場合。
+
+        Example:
+            >>> @registry.register
+            ... class MyAdapter(BaseAdapter):
+            ...     @property
+            ...     def source_format(self) -> str:
+            ...         return "deca"
+            ...     @property
+            ...     def target_format(self) -> str:
+            ...         return "flash_avatar"
+            ...     def convert(self, source_params):
+            ...         ...
+        """
+        if not (isinstance(adapter_cls, type) and issubclass(adapter_cls, BaseAdapter)):
+            raise TypeError(
+                f"登録対象はBaseAdapterのサブクラスである必要があります。"
+                f"受け取った型: {type(adapter_cls)}"
             )
 
-        key = (src, tgt)
-        if key not in self._registry:
-            raise KeyError(
-                f"No adapter registered for ({src} → {tgt}). "
-                f"Available: {list(self._registry.keys())}"
-            )
-        return self._registry[key]
+        temp_instance: BaseAdapter = adapter_cls()
+        key: str = self._make_key(
+            temp_instance.source_format, temp_instance.target_format
+        )
+        self._adapters[key] = adapter_cls
+        return adapter_cls
 
-    def get_instance(
-        self,
-        source_format: str,
-        target_format: str,
+    def get(self, source_format: str, target_format: str) -> BaseAdapter:
+        """登録済みAdapterのインスタンスを返す。
+
+        ``source_format`` と ``target_format`` の組み合わせに対応する
+        Adapterクラスをインスタンス化して返す。
+
+        Args:
+            source_format: 変換元フォーマット名。例: ``"deca"``。
+            target_format: 変換先フォーマット名。例: ``"flash_avatar"``。
+
+        Returns:
+            対応するAdapterの新規インスタンス。
+
+        Raises:
+            KeyError: 対応するAdapterが未登録の場合。
+                エラーメッセージに登録済みキー一覧を含む。
+
+        Example:
+            >>> adapter = registry.get("deca", "flash_avatar")
+            >>> adapter.source_format  # "deca"
+        """
+        key: str = self._make_key(source_format, target_format)
+        adapter_cls: Optional[Type[BaseAdapter]] = self._adapters.get(key)
+
+        if adapter_cls is None:
+            available: List[str] = self.list_adapters()
+            raise KeyError(
+                f"Adapterが見つかりません: '{key}'。"
+                f"登録済みAdapter: {available}"
+            )
+
+        return adapter_cls()
+
+    def list_adapters(self) -> List[str]:
+        """登録済みAdapterのキー一覧を返す。
+
+        Returns:
+            ``"{source}_to_{target}"`` 形式のキー文字列のリスト。
+
+        Example:
+            >>> registry.list_adapters()
+            ['deca_to_flash_avatar', 'identity_to_identity']
+        """
+        return list(self._adapters.keys())
+
+    def auto_select(
+        self, extractor_type: str, renderer_type: str
     ) -> BaseAdapter:
-        """Adapter のインスタンスを直接返すヘルパー。"""
-        cls = self.get(source_format, target_format)
-        return cls()
+        """Extractor/Rendererの型名から適切なAdapterを自動選択する。
 
-    # ------------------------------------------------------------------
-    # ユーティリティ
-    # ------------------------------------------------------------------
+        config.yamlの ``extractor.type`` と ``renderer.type`` から
+        対応するAdapterを検索する。完全一致が見つからない場合は
+        ``"identity"`` アダプタへのフォールバックを試みる。
 
-    def available(self) -> list[Tuple[str, str]]:
-        """登録済みの (source, target) ペア一覧を返す。"""
-        return list(self._registry.keys())
+        Args:
+            extractor_type: Extractorの種別名。例: ``"deca"``、``"deep3d"``。
+            renderer_type: Rendererの種別名。例: ``"flash_avatar"``、``"pirender"``。
 
+        Returns:
+            選択されたAdapterの新規インスタンス。
 
-# グローバルレジストリインスタンス
-# 各 Adapter モジュール (deca_to_flame.py 等) がインポート時に登録する
-adapter_registry = AdapterRegistry()
+        Raises:
+            KeyError: 対応するAdapterが見つからず、identityアダプタも
+                未登録の場合。
+
+        Example:
+            >>> adapter = registry.auto_select("deca", "flash_avatar")
+            >>> adapter.source_format  # "deca"
+        """
+        key: str = self._make_key(extractor_type, renderer_type)
+
+        # 完全一致で検索
+        if key in self._adapters:
+            return self._adapters[key]()
+
+        # identity フォールバック
+        identity_key: str = self._make_key("identity", "identity")
+        if identity_key in self._adapters:
+            return self._adapters[identity_key]()
+
+        available: List[str] = self.list_adapters()
+        raise KeyError(
+            f"Adapterが見つかりません: '{key}'。"
+            f"identityアダプタも未登録です。"
+            f"登録済みAdapter: {available}"
+        )
+
+    @staticmethod
+    def _make_key(source_format: str, target_format: str) -> str:
+        """source_formatとtarget_formatからレジストリキーを生成する。
+
+        Args:
+            source_format: 変換元フォーマット名。
+            target_format: 変換先フォーマット名。
+
+        Returns:
+            ``"{source}_to_{target}"`` 形式のキー文字列。
+        """
+        return f"{source_format}_to_{target_format}"

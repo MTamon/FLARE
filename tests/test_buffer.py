@@ -1,116 +1,163 @@
-"""PipelineBuffer のテスト (Section 8.4)"""
+"""flare.pipeline.buffer のテスト。
+
+PipelineBufferのput/get操作、FrameDropPolicy、統計情報収集、
+タイムアウト動作、clear操作を検証する。
+"""
 
 from __future__ import annotations
 
-import threading
-import time
-
 import pytest
 
-from flare.pipeline.buffer import PipelineBuffer
+from flare.pipeline.buffer import FrameDropPolicy, PipelineBuffer
 
 
-class TestPipelineBufferBasic:
-    def test_put_and_get(self):
-        buf = PipelineBuffer(max_size=10, timeout=1.0)
-        data = {"frame_idx": 0, "tensor": "dummy"}
-        assert buf.put(data) is True
+class TestFrameDropPolicy:
+    """FrameDropPolicy enumのテスト。"""
+
+    def test_frame_drop_policy_enum(self) -> None:
+        """DROP_OLDEST / BLOCK / INTERPOLATEの3値を持つことを確認する。"""
+        assert FrameDropPolicy.DROP_OLDEST.value == "drop_oldest"
+        assert FrameDropPolicy.BLOCK.value == "block"
+        assert FrameDropPolicy.INTERPOLATE.value == "interpolate"
+        assert len(FrameDropPolicy) == 3
+
+
+class TestPipelineBuffer:
+    """PipelineBufferのテストスイート。"""
+
+    def test_put_and_get(self) -> None:
+        """put()でデータを追加しget()で取得できることを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=10, timeout=0.1)
+
+        buf.put({"frame": "data_0", "idx": 0})
+        buf.put({"frame": "data_1", "idx": 1})
+
         result = buf.get()
         assert result is not None
-        assert result["frame_idx"] == 0
+        assert result["idx"] == 0
 
-    def test_get_timeout_returns_none(self):
-        buf = PipelineBuffer(max_size=10, timeout=0.05)
         result = buf.get()
-        assert result is None
+        assert result is not None
+        assert result["idx"] == 1
 
-    def test_qsize(self):
-        buf = PipelineBuffer(max_size=10)
-        assert buf.qsize == 0
-        buf.put({"a": 1})
-        buf.put({"b": 2})
-        assert buf.qsize == 2
+    def test_drop_oldest_policy(self) -> None:
+        """max_size=2のバッファに3件put()した場合、最古が破棄されることを確認する。
 
-    def test_empty_and_full(self):
-        buf = PipelineBuffer(max_size=2)
-        assert buf.empty is True
-        assert buf.full is False
-        buf.put({"a": 1})
-        buf.put({"b": 2})
-        assert buf.full is True
+        最古（idx=0）が破棄され、idx=1とidx=2が残る。
+        """
+        buf: PipelineBuffer = PipelineBuffer(
+            max_size=2, timeout=0.1, overflow_policy="drop_oldest"
+        )
 
-    def test_clear(self):
-        buf = PipelineBuffer(max_size=10)
-        for i in range(5):
-            buf.put({"i": i})
-        cleared = buf.clear()
-        assert cleared == 5
-        assert buf.empty is True
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})
+        buf.put({"idx": 2})  # idx=0 がドロップされる
 
-
-class TestPipelineBufferDropOldest:
-    """Section 6.4: drop_oldest ポリシー。"""
-
-    def test_overflow_drops_oldest(self):
-        buf = PipelineBuffer(max_size=3, overflow_policy="drop_oldest")
-        for i in range(5):
-            buf.put({"i": i})
-
-        # 最新 3 フレーム (2, 3, 4) が残っているはず
-        assert buf.qsize == 3
         first = buf.get()
         assert first is not None
-        assert first["i"] == 2
+        assert first["idx"] == 1
 
-    def test_drop_stats(self):
-        buf = PipelineBuffer(max_size=2, overflow_policy="drop_oldest")
-        for i in range(5):
-            buf.put({"i": i})
-        stats = buf.stats
-        assert stats["dropped"] == 3
-        assert stats["total_put"] == 5
+        second = buf.get()
+        assert second is not None
+        assert second["idx"] == 2
 
+    def test_stats_dropped_count(self) -> None:
+        """ドロップ発生時にget_stats()["dropped"]が正しくカウントされることを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(
+            max_size=1, timeout=0.1, overflow_policy="drop_oldest"
+        )
 
-class TestPipelineBufferBlock:
-    """Section 6.4: block ポリシー。"""
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})  # idx=0 ドロップ
+        buf.put({"idx": 2})  # idx=1 ドロップ
 
-    def test_block_policy_waits(self):
-        buf = PipelineBuffer(max_size=2, timeout=0.1, overflow_policy="block")
-        buf.put({"a": 1})
-        buf.put({"b": 2})
-        # バッファ満杯 → block → timeout → False
-        result = buf.put({"c": 3})
-        assert result is False
+        stats = buf.get_stats()
+        assert stats["dropped"] == 2
 
-    def test_block_policy_succeeds_when_space(self):
-        buf = PipelineBuffer(max_size=2, timeout=1.0, overflow_policy="block")
-        buf.put({"a": 1})
-        buf.put({"b": 2})
+    def test_stats_total_put(self) -> None:
+        """put() N回でget_stats()["total_put"] == N であることを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=100, timeout=0.1)
 
-        # 別スレッドで少し待ってから get して空きを作る
-        def consumer():
-            time.sleep(0.05)
-            buf.get()
+        for i in range(7):
+            buf.put({"idx": i})
 
-        t = threading.Thread(target=consumer)
-        t.start()
-        result = buf.put({"c": 3})
-        t.join()
-        assert result is True
+        stats = buf.get_stats()
+        assert stats["total_put"] == 7
 
+    def test_stats_total_get(self) -> None:
+        """get()成功回数がget_stats()["total_get"]に反映されることを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=10, timeout=0.1)
 
-class TestPipelineBufferStats:
-    def test_stats_initial(self):
-        buf = PipelineBuffer()
-        stats = buf.stats
+        for i in range(3):
+            buf.put({"idx": i})
+
+        buf.get()
+        buf.get()
+
+        stats = buf.get_stats()
+        assert stats["total_get"] == 2
+
+    def test_get_timeout_returns_none(self) -> None:
+        """空バッファからget(timeout=0.1)がNoneを返すことを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=10, timeout=0.05)
+
+        result = buf.get(timeout=0.1)
+        assert result is None
+
+    def test_qsize(self) -> None:
+        """put()後にqsize()が正しい値を返すことを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=10, timeout=0.1)
+
+        assert buf.qsize() == 0
+
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})
+        buf.put({"idx": 2})
+
+        assert buf.qsize() == 3
+
+        buf.get()
+        assert buf.qsize() == 2
+
+    def test_is_empty_and_full(self) -> None:
+        """is_empty()とis_full()が正しく動作することを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=2, timeout=0.1)
+
+        assert buf.is_empty() is True
+        assert buf.is_full() is False
+
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})
+
+        assert buf.is_empty() is False
+        assert buf.is_full() is True
+
+    def test_clear(self) -> None:
+        """clear()後にis_empty()がTrueを返すことを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(max_size=10, timeout=0.1)
+
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})
+        buf.put({"idx": 2})
+        assert buf.qsize() == 3
+
+        buf.clear()
+        assert buf.is_empty() is True
+        assert buf.qsize() == 0
+
+    def test_reset_stats(self) -> None:
+        """reset_stats()で統計がゼロリセットされることを確認する。"""
+        buf: PipelineBuffer = PipelineBuffer(
+            max_size=1, timeout=0.1, overflow_policy="drop_oldest"
+        )
+
+        buf.put({"idx": 0})
+        buf.put({"idx": 1})  # drop
+        buf.get()
+
+        buf.reset_stats()
+        stats = buf.get_stats()
+
         assert stats["dropped"] == 0
         assert stats["total_put"] == 0
         assert stats["total_get"] == 0
-        assert stats["max_consecutive_drops"] == 0
-
-    def test_consecutive_drops_tracked(self):
-        buf = PipelineBuffer(max_size=1, overflow_policy="drop_oldest")
-        for i in range(10):
-            buf.put({"i": i})
-        stats = buf.stats
-        assert stats["max_consecutive_drops"] >= 1

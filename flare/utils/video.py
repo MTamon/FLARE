@@ -1,140 +1,274 @@
-"""動画 I/O ユーティリティ
+"""動画I/Oユーティリティ。
 
-Webcam キャプチャ（リアルタイムモード）と動画ファイル読み書き（バッチモード）
-の基本操作を提供する。
+cv2.VideoCapture / cv2.VideoWriter をラップし、コンテキストマネージャと
+イテレータプロトコルを提供する。リアルタイムモード（Webcam入力）と
+バッチモード（動画ファイル入力/出力）の両方に対応する。
+
+Example:
+    >>> with VideoReader("input.mp4") as reader:
+    ...     for frame in reader:
+    ...         process(frame)
+    >>>
+    >>> with VideoWriter("output.mp4", fps=30.0, frame_size=(512, 512)) as writer:
+    ...     writer.write_frame(rendered_frame)
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from typing import Generator, Optional, Tuple, Union
+from typing import Iterator, Optional, Tuple, Union
 
 import cv2
 import numpy as np
-import torch
 from loguru import logger
 
 
-def open_video(
-    source: Union[str, Path, int],
-) -> cv2.VideoCapture:
-    """動画ファイルまたはカメラデバイスを開く。
+class VideoReader:
+    """cv2.VideoCaptureのラッパークラス。
 
-    Args:
-        source: ファイルパス or カメラデバイス番号 (0, 1, …)。
+    動画ファイルまたはWebカメラからフレームを読み込む。
+    コンテキストマネージャおよびイテレータプロトコルをサポートする。
 
-    Returns:
-        オープン済みの cv2.VideoCapture。
+    Attributes:
+        _cap: OpenCVのVideoCaptureインスタンス。
+        _source: 入力ソース（ファイルパスまたはカメラID）。
 
-    Raises:
-        IOError: オープンに失敗した場合。
+    Example:
+        >>> # ファイルから読み込み
+        >>> with VideoReader("video.mp4") as reader:
+        ...     print(f"FPS: {reader.get_fps()}, Frames: {reader.get_total_frames()}")
+        ...     for frame in reader:
+        ...         cv2.imshow("frame", frame)
+        >>>
+        >>> # Webcamから読み込み
+        >>> with VideoReader(0, width=640, height=480) as reader:
+        ...     frame = reader.read_frame()
     """
-    cap = cv2.VideoCapture(str(source) if isinstance(source, Path) else source)
-    if not cap.isOpened():
-        raise IOError(f"Cannot open video source: {source}")
-    return cap
-
-
-def read_frames(
-    source: Union[str, Path, int],
-    max_frames: Optional[int] = None,
-) -> Generator[np.ndarray, None, None]:
-    """動画からフレームを順に yield する。
-
-    Args:
-        source: ファイルパスまたはカメラデバイス番号。
-        max_frames: 読み取りフレーム数上限。None で全フレーム。
-
-    Yields:
-        BGR 画像 (H, W, 3) as np.ndarray (uint8)。
-    """
-    cap = open_video(source)
-    count = 0
-    try:
-        while True:
-            if max_frames is not None and count >= max_frames:
-                break
-            ret, frame = cap.read()
-            if not ret:
-                break
-            yield frame
-            count += 1
-    finally:
-        cap.release()
-    logger.debug(f"Read {count} frames from {source}")
-
-
-def get_video_info(
-    source: Union[str, Path, int],
-) -> dict:
-    """動画のメタ情報を返す。"""
-    cap = open_video(source)
-    info = {
-        "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        "fps": cap.get(cv2.CAP_PROP_FPS),
-        "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
-    }
-    cap.release()
-    return info
-
-
-def frame_to_tensor(
-    frame: np.ndarray,
-    size: Optional[Tuple[int, int]] = None,
-    device: str = "cpu",
-) -> torch.Tensor:
-    """BGR numpy 画像を (1, C, H, W) float32 Tensor に変換する。
-
-    Args:
-        frame: (H, W, 3) uint8 BGR。
-        size: (H, W) にリサイズ。None ならそのまま。
-        device: 配置先デバイス。
-
-    Returns:
-        (1, 3, H, W) float32 Tensor, 値域 [0, 1]。
-    """
-    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    if size is not None:
-        img = cv2.resize(img, (size[1], size[0]))  # cv2.resize は (W, H)
-    tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-    return tensor.to(device)
-
-
-def tensor_to_frame(tensor: torch.Tensor) -> np.ndarray:
-    """(1, C, H, W) float Tensor → BGR numpy uint8 画像。"""
-    img = tensor.squeeze(0).detach().cpu().clamp(0, 1)
-    img = (img * 255).byte().permute(1, 2, 0).numpy()
-    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-
-class VideoWriter:
-    """cv2.VideoWriter のラッパー。コンテキストマネージャ対応。"""
 
     def __init__(
         self,
-        path: Union[str, Path],
-        fps: float = 30.0,
-        size: Tuple[int, int] = (512, 512),
-        codec: str = "mp4v",
+        source: Union[str, int],
+        *,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
     ) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*codec)
-        # cv2.VideoWriter は (W, H)
-        self._writer = cv2.VideoWriter(str(self._path), fourcc, fps, (size[1], size[0]))
-        self._count = 0
+        """VideoReaderを初期化する。
 
-    def write(self, frame: np.ndarray) -> None:
-        self._writer.write(frame)
-        self._count += 1
+        Args:
+            source: 動画ファイルパス（str）またはカメラデバイスID（int）。
+            width: フレームの横幅を指定。Noneの場合は元の解像度を使用。
+            height: フレームの縦幅を指定。Noneの場合は元の解像度を使用。
 
-    def close(self) -> None:
-        self._writer.release()
-        logger.info(f"Wrote {self._count} frames to {self._path}")
+        Raises:
+            FileNotFoundError: ファイルパスが指定されたが存在しない場合。
+            RuntimeError: VideoCaptureのオープンに失敗した場合。
+        """
+        self._source: Union[str, int] = source
 
-    def __enter__(self):
+        if isinstance(source, str) and not Path(source).exists():
+            raise FileNotFoundError(f"動画ファイルが見つかりません: {source}")
+
+        self._cap: cv2.VideoCapture = cv2.VideoCapture(source)
+
+        if not self._cap.isOpened():
+            raise RuntimeError(
+                f"動画ソースのオープンに失敗しました: {source}"
+            )
+
+        if width is not None:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+        if height is not None:
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+
+        logger.debug(
+            "VideoReader初期化: source={} | size={}",
+            source,
+            self.get_frame_size(),
+        )
+
+    def read_frame(self) -> Optional[np.ndarray]:
+        """1フレームを読み込む。
+
+        Returns:
+            BGR形式の画像ndarray（shape: (H, W, 3), dtype: uint8）。
+            動画終端または読み込み失敗時は ``None``。
+        """
+        ret: bool
+        frame: np.ndarray
+        ret, frame = self._cap.read()
+
+        if not ret:
+            return None
+        return frame
+
+    def get_fps(self) -> float:
+        """動画のFPSを返す。
+
+        Returns:
+            フレームレート（fps）。Webcamの場合はデバイス報告値。
+        """
+        fps: float = self._cap.get(cv2.CAP_PROP_FPS)
+        return fps if fps > 0.0 else 30.0
+
+    def get_total_frames(self) -> int:
+        """動画の総フレーム数を返す。
+
+        Returns:
+            ファイルの場合は総フレーム数。
+            Webcam（int source）の場合は ``sys.maxsize``。
+        """
+        if isinstance(self._source, int):
+            return sys.maxsize
+
+        total: int = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        return total if total > 0 else sys.maxsize
+
+    def get_frame_size(self) -> Tuple[int, int]:
+        """フレームサイズを返す。
+
+        Returns:
+            ``(width, height)`` のタプル。
+        """
+        width: int = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height: int = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        return (width, height)
+
+    def release(self) -> None:
+        """VideoCaptureリソースを解放する。"""
+        if self._cap is not None and self._cap.isOpened():
+            self._cap.release()
+            logger.debug("VideoReader解放: source={}", self._source)
+
+    def __enter__(self) -> VideoReader:
+        """コンテキストマネージャのエントリ。
+
+        Returns:
+            自身のインスタンス。
+        """
         return self
 
-    def __exit__(self, *exc):
-        self.close()
+    def __exit__(
+        self,
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        """コンテキストマネージャの終了処理。リソースを解放する。
+
+        Args:
+            exc_type: 例外型（あれば）。
+            exc_val: 例外値（あれば）。
+            exc_tb: トレースバック（あれば）。
+        """
+        self.release()
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        """フレームを順次返すイテレータ。
+
+        Yields:
+            BGR形式の画像ndarray。動画終端で停止。
+        """
+        while True:
+            frame: Optional[np.ndarray] = self.read_frame()
+            if frame is None:
+                break
+            yield frame
+
+
+class VideoWriter:
+    """cv2.VideoWriterのラッパークラス。
+
+    レンダリング結果を動画ファイルに書き出す。
+    コンテキストマネージャをサポートする。
+
+    Example:
+        >>> with VideoWriter("output.mp4", fps=30.0, frame_size=(512, 512)) as writer:
+        ...     writer.write_frame(frame)
+    """
+
+    def __init__(
+        self,
+        output_path: str,
+        fps: float,
+        frame_size: Tuple[int, int],
+        *,
+        codec: str = "mp4v",
+    ) -> None:
+        """VideoWriterを初期化する。
+
+        Args:
+            output_path: 出力動画ファイルパス。
+            fps: 出力フレームレート。
+            frame_size: フレームサイズ ``(width, height)``。
+            codec: FourCCコーデック文字列。デフォルトは ``"mp4v"``。
+
+        Raises:
+            RuntimeError: VideoWriterのオープンに失敗した場合。
+        """
+        self._output_path: str = output_path
+        self._fps: float = fps
+        self._frame_size: Tuple[int, int] = frame_size
+        self._frame_count: int = 0
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        fourcc: int = cv2.VideoWriter_fourcc(*codec)
+        self._writer: cv2.VideoWriter = cv2.VideoWriter(
+            output_path, fourcc, fps, frame_size
+        )
+
+        if not self._writer.isOpened():
+            raise RuntimeError(
+                f"VideoWriterのオープンに失敗しました: {output_path}"
+            )
+
+        logger.debug(
+            "VideoWriter初期化: path={} | fps={} | size={} | codec={}",
+            output_path,
+            fps,
+            frame_size,
+            codec,
+        )
+
+    def write_frame(self, frame: np.ndarray) -> None:
+        """1フレームを書き込む。
+
+        Args:
+            frame: BGR形式の画像ndarray（shape: (H, W, 3), dtype: uint8）。
+        """
+        self._writer.write(frame)
+        self._frame_count += 1
+
+    def release(self) -> None:
+        """VideoWriterリソースを解放する。"""
+        if self._writer is not None and self._writer.isOpened():
+            self._writer.release()
+            logger.debug(
+                "VideoWriter解放: path={} | frames={}",
+                self._output_path,
+                self._frame_count,
+            )
+
+    def __enter__(self) -> VideoWriter:
+        """コンテキストマネージャのエントリ。
+
+        Returns:
+            自身のインスタンス。
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        """コンテキストマネージャの終了処理。リソースを解放する。
+
+        Args:
+            exc_type: 例外型（あれば）。
+            exc_val: 例外値（あれば）。
+            exc_tb: トレースバック（あれば）。
+        """
+        self.release()
