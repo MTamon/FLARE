@@ -18,42 +18,4 @@ from __future__ import annotations
 
 from typing import List
 
-__all__: List[str] = []
-
-# --- BaseAdapter ---
-try:
-    from flare.converters.base import BaseAdapter as BaseAdapter
-
-    __all__.append("BaseAdapter")
-except ImportError:
-    pass
-
-# --- AdapterRegistry ---
-try:
-    from flare.converters.registry import AdapterRegistry as AdapterRegistry
-
-    __all__.append("AdapterRegistry")
-except ImportError:
-    pass
-
-# --- Concrete adapters ---
-try:
-    from flare.converters.deca_to_flame import DECAToFlameAdapter as DECAToFlameAdapter
-
-    __all__.append("DECAToFlameAdapter")
-except ImportError:
-    pass
-
-try:
-    from flare.converters.flame_to_pirender import FlameToPIRenderAdapter as FlameToPIRenderAdapter
-
-    __all__.append("FlameToPIRenderAdapter")
-except ImportError:
-    pass
-
-try:
-    from flare.converters.identity import IdentityAdapter as IdentityAdapter
-
-    __all__.append("IdentityAdapter")
-except ImportError:
-    pass
+__all__: List[str] = ["BaseAdapter", "AdapterRegistry", "DECAToFlameAdapter", "FlameToPIRenderAdapter", "IdentityAdapter",]
