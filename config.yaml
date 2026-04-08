@@ -1,0 +1,51 @@
+# config.yaml
+pipeline:
+  name: "lhg_realtime_v1"
+  fps: 30
+  device: "cuda:0"
+  converter_chain:
+    - type: deca_to_flame
+    - type: identity
+
+extractor:
+  type: "deca"
+  model_path: "./checkpoints/deca_model.tar"
+  input_size: 224
+  return_keys: ["shape", "exp", "pose", "detail"]
+
+lhg_model:
+  type: "learning2listen"
+  model_path: "./checkpoints/l2l_vqvae.pth"
+  window_size: 64
+  codebook_size: 256
+
+renderer:
+  type: "flash_avatar"
+  model_path: "./checkpoints/flashavatar/"
+  source_image: "./data/source_portrait.png"
+  output_size: [512, 512]
+
+audio:
+  sample_rate: 16000
+  feature_type: "mel"  # or "hubert", "wav2vec2"
+  n_mels: 128
+
+buffer:
+  max_size: 256
+  timeout_sec: 0.5
+  overflow_policy: "drop_oldest"
+
+device_map:
+  extractor: "cuda:0"
+  lhg_model: "cuda:0"
+  renderer: "cuda:0"
+
+logging:
+  level: "INFO"
+  file: "./logs/pipeline.log"
+  rotation: "10 MB"
+
+checkpoint:
+  enabled: true
+  save_dir: "./checkpoints/batch/"
+  format: "json"

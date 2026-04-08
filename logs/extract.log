@@ -1,0 +1,14 @@
+2026-04-07 04:37:19 | INFO | cli:146 | === FLARE Batch Extract ===
+2026-04-07 04:37:19 | INFO | cli:147 | Route:     flame
+2026-04-07 04:37:19 | INFO | cli:148 | Extractor: deca
+2026-04-07 04:37:19 | INFO | cli:149 | GPU:       0
+2026-04-07 04:37:19 | INFO | cli:150 | Batch:     32
+2026-04-07 04:37:19 | INFO | cli:151 | Input:     data/videos
+2026-04-07 04:37:19 | INFO | cli:152 | Output:    data/features
+2026-04-07 04:37:19 | INFO | cli:155 | [DRY RUN] Configuration validated successfully.
+2026-04-07 04:37:19 | INFO | cli:156 | [DRY RUN] Pipeline: extract_flame_deca
+2026-04-07 04:37:19 | INFO | cli:157 | [DRY RUN] Extractor: type=deca, input_size=224
+2026-04-07 04:37:19 | INFO | cli:158 | [DRY RUN] Device map: extractor=cuda:0, lhg_model=cuda:0, renderer=cuda:0
+2026-04-07 04:37:19 | INFO | cli:159 | [DRY RUN] Buffer: max_size=128, overflow_policy=block
+2026-04-07 04:37:19 | INFO | cli:160 | [DRY RUN] No actual processing performed.
+2026-04-07 04:37:19 | INFO | cli:161 | === Dry run complete ===
