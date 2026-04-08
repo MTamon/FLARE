@@ -7,4 +7,13 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
+
+# Test cache
+.pytest_cache/
+
+# Logs
+logs/
+
+# Claude Code local settings
+.claude/
