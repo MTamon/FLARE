@@ -24,6 +24,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import click
 from loguru import logger
@@ -37,7 +38,44 @@ from flare.config import (
     RendererConfig,
 )
 from flare.pipeline.batch import BatchPipeline
+from flare.pipeline.lhg_batch import LHGBatchPipeline
 from flare.utils.logging import setup_logger
+
+
+def _build_extractor(extractor_type: str, model_path: str, device: str):
+    """Extractor 種別からインスタンスを構築するヘルパー。
+
+    重いモデルファイルの読み込みを伴うため、``dry-run`` 時には呼び出さない。
+
+    Args:
+        extractor_type: ``"deca"``, ``"deep3d"``, ``"smirk"``, ``"3ddfa"`` のいずれか。
+        model_path: モデルチェックポイントパス。
+        device: 計算デバイス文字列。
+
+    Returns:
+        構築済み ``BaseExtractor`` サブクラスインスタンス。
+
+    Raises:
+        ValueError: 未知の extractor_type の場合。
+    """
+    et = extractor_type.lower()
+    if et == "deca":
+        from flare.extractors.deca import DECAExtractor
+
+        return DECAExtractor(model_path=model_path, device=device)
+    if et == "deep3d":
+        from flare.extractors.deep3d import Deep3DFaceReconExtractor
+
+        return Deep3DFaceReconExtractor(model_path=model_path, device=device)
+    if et == "smirk":
+        from flare.extractors.smirk import SMIRKExtractor
+
+        return SMIRKExtractor(model_path=model_path, device=device)
+    if et in ("3ddfa", "tdddfa"):
+        from flare.extractors.tdddfa import TDDFAExtractor
+
+        return TDDFAExtractor(model_path=model_path, device=device)
+    raise ValueError(f"Unknown extractor type: {extractor_type!r}")
 
 
 @click.group()
@@ -295,3 +333,167 @@ def render(
         "Renderer implementations will be available in Phase 2/3."
     )
     logger.info("=== Render complete ===")
+
+
+@cli.command("lhg-extract")
+@click.option(
+    "--path",
+    "input_root",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="multimodal_dialogue_formed ルートディレクトリ。",
+)
+@click.option(
+    "--output",
+    "output_root",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="movements 出力ルートディレクトリ。存在しなければ作成。",
+)
+@click.option(
+    "--extractor",
+    "extractor_type",
+    default=None,
+    type=click.Choice(["deca", "deep3d", "smirk", "3ddfa"], case_sensitive=False),
+    help="使用する Extractor 種別。指定時は --config の extractor.type を上書き。",
+)
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="YAML 設定ファイルパス。省略時はデフォルト設定を使用。",
+)
+@click.option(
+    "--model-path",
+    default=None,
+    type=click.Path(),
+    help="Extractor モデルチェックポイントパス。指定時は config を上書き。",
+)
+@click.option(
+    "--num-workers",
+    default=1,
+    type=int,
+    show_default=True,
+    help="並列ワーカ数（現状は 1 のみサポート）。",
+)
+@click.option(
+    "--gpus",
+    default=None,
+    type=str,
+    help="使用する GPU ID（カンマ区切り、例: '0,1'）。先頭のみが extractor に使用される。",
+)
+@click.option(
+    "--redo",
+    is_flag=True,
+    default=False,
+    help="既存出力を上書きする。",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="設定検証のみ実行。モデルや動画は読み込まない。",
+)
+def lhg_extract(
+    input_root: str,
+    output_root: str,
+    extractor_type: Optional[str],
+    config_path: Optional[str],
+    model_path: Optional[str],
+    num_workers: int,
+    gpus: Optional[str],
+    redo: bool,
+    dry_run: bool,
+) -> None:
+    """LHG 頭部特徴量抽出バッチを実行する。
+
+    ``multimodal_dialogue_formed/dataXXX/{comp,host}.mp4`` 形式のデータセットから
+    DECA / Deep3DFaceRecon / SMIRK / 3DDFA を用いて per-frame に 3DMM パラメータを
+    抽出し、ギャップ補間・シーケンス分割・対話単位正規化を行って
+    ``movements/dataXXX/{comp,host}/<prefix>_<role>_<SSSSS>_<EEEEE>.npz`` として
+    保存する。下流の ``databuild_nx8.py`` と互換な npz スキーマで出力する。
+
+    Args:
+        input_root: ``multimodal_dialogue_formed`` ルートディレクトリ。
+        output_root: ``movements`` 出力ルート。
+        extractor_type: Extractor 種別。指定時は config を上書き。
+        config_path: YAML 設定ファイル。
+        model_path: Extractor モデルチェックポイントパス。
+        num_workers: 並列ワーカ数。
+        gpus: 使用する GPU ID 列（カンマ区切り）。
+        redo: 既存出力を上書きするか。
+        dry_run: 設定検証のみ実行するか。
+    """
+    setup_logger(level="INFO", log_file="./logs/lhg_extract.log")
+
+    if config_path is not None:
+        config = PipelineConfig.from_yaml(config_path)
+    else:
+        config = PipelineConfig()
+
+    if extractor_type is not None:
+        config.extractor.type = extractor_type.lower()
+    if model_path is not None:
+        config.extractor.model_path = model_path
+
+    if gpus is not None:
+        gpu_ids = [g.strip() for g in gpus.split(",") if g.strip()]
+        if gpu_ids:
+            primary = f"cuda:{gpu_ids[0]}"
+            config.device_map.extractor = primary
+            config.device_map.lhg_model = primary
+            config.device_map.renderer = primary
+
+    logger.info("=== FLARE LHG Extract ===")
+    logger.info("Input root:   {}", input_root)
+    logger.info("Output root:  {}", output_root)
+    logger.info("Extractor:    {}", config.extractor.type)
+    logger.info("Model path:   {}", config.extractor.model_path)
+    logger.info("Device:       {}", config.device_map.extractor)
+    logger.info("Num workers:  {}", num_workers)
+    logger.info("Redo:         {}", redo)
+    logger.info(
+        "Interp linear={} rotation={} max_gap_sec={}",
+        config.lhg_extract.interpolation.linear_order,
+        config.lhg_extract.interpolation.rotation_order,
+        config.lhg_extract.interpolation.max_gap_sec,
+    )
+    logger.info("Min length:   {}", config.lhg_extract.sequence.min_length)
+    logger.info(
+        "Shape agg:    {}", config.lhg_extract.output.shape_aggregation
+    )
+
+    if dry_run:
+        logger.info("[DRY RUN] Configuration validated successfully.")
+        logger.info("[DRY RUN] No models loaded and no videos processed.")
+        logger.info("=== Dry run complete ===")
+        return
+
+    input_path = Path(input_root)
+    if not input_path.exists():
+        raise click.BadParameter(
+            f"Input root does not exist: {input_root}",
+            param_hint="--path",
+        )
+
+    extractor = _build_extractor(
+        extractor_type=config.extractor.type,
+        model_path=config.extractor.model_path,
+        device=config.device_map.extractor,
+    )
+
+    pipeline = LHGBatchPipeline(config=config, extractor=extractor)
+    stats = pipeline.run(
+        input_root=input_root,
+        output_root=output_root,
+        num_workers=num_workers,
+        redo=redo,
+    )
+
+    logger.info(
+        "=== LHG extract complete: {} dirs, {} sequences, {} skipped ===",
+        stats["num_data_dirs"],
+        stats["num_sequences"],
+        stats["num_skipped"],
+    )

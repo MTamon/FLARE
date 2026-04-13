@@ -1,0 +1,73 @@
+# FLARE LHG 頭部特徴量抽出設定 (DECA / FLAME ルート)
+#
+# 使用例:
+#   uv run python tool.py lhg-extract \
+#       --path ./data/multimodal_dialogue_formed \
+#       --output ./data/movements \
+#       --config configs/lhg_extract_deca.yaml
+#
+# 設計ドキュメント:
+#   - docs/design/lhg_extract_pipeline.md
+#   - docs/design/interpolation.md
+#   - docs/design/rotation_interpolation.md
+
+pipeline:
+  name: lhg_extract_deca
+  fps: 30
+  device: cuda:0
+
+extractor:
+  type: deca
+  model_path: ./checkpoints/deca_model.tar
+  input_size: 224
+  return_keys:
+    - shape
+    - exp
+    - pose
+    - cam
+
+device_map:
+  extractor: cuda:0
+  lhg_model: cuda:0
+  renderer: cuda:0
+
+logging:
+  level: INFO
+  file: ./logs/lhg_extract_deca.log
+  rotation: 10 MB
+
+lhg_extract:
+  interpolation:
+    # 線形空間特徴量 (expression / centroid / jaw_pose / face_size) の補間手法。
+    # "linear": 線形補間 (既定、高速・安全・単調性保存)
+    # "pchip":  Fritsch-Carlson PCHIP (scipy 要、滑らかさ重視でオーバーシュート抑制)
+    linear_order: linear
+
+    # 回転特徴量 (angle) の補間手法。
+    # "slerp":  球面線形補間 (既定、SO(3) マニフォルド上で短弧を選択)
+    # "linear": 軸角空間線形補間 (小角領域のみ。レガシー互換)
+    rotation_order: slerp
+
+    # 補間を許容する最大ギャップ秒数。これを超える欠損はシーケンス境界として分割。
+    # 旧 MediaPipe パイプラインの FIX_SEC=0.4 を踏襲。
+    max_gap_sec: 0.4
+
+  sequence:
+    # 採用する最小シーケンス長 (フレーム数)。これ未満のサブシーケンスは破棄。
+    # 旧 MIN_DATA_SIZE=100 を踏襲。
+    min_length: 100
+
+  normalization:
+    # 正規化スコープ。現状 "sequence" のみサポート。
+    # 対話 (動画ファイル) 単位で mean/std を計算し、相対的な動きのみを学習する。
+    scope: sequence
+
+  output:
+    # 出力ファイル名プレフィックス (None なら Extractor 種別から自動決定)。
+    prefix: deca
+
+    # シーケンス内 shape 係数の集約方法。
+    # "median": 中央値 (既定、外れ値に頑健)
+    # "first":  最初の有効フレーム
+    # "mean":   平均値
+    shape_aggregation: median

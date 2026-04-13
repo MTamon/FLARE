@@ -188,6 +188,109 @@ class CheckpointConfig(BaseModel):
     format: str = Field(default="json", description="ファイル形式")
 
 
+class LHGInterpolationConfig(BaseModel):
+    """LHG 抽出パイプラインの補間設定。
+
+    Attributes:
+        linear_order: 線形空間特徴量（expression / centroid / jaw_pose / face_size）の
+            補間手法。``"linear"`` または ``"pchip"``。
+        rotation_order: 回転特徴量（angle）の補間手法。``"slerp"`` または ``"linear"``。
+        max_gap_sec: 補間を許容する最大ギャップ秒数。これを超える欠損は分割境界
+            として扱われる。
+    """
+
+    linear_order: str = Field(
+        default="linear",
+        pattern=r"^(linear|pchip)$",
+        description="線形空間特徴量の補間手法",
+    )
+    rotation_order: str = Field(
+        default="slerp",
+        pattern=r"^(slerp|linear)$",
+        description="回転特徴量の補間手法",
+    )
+    max_gap_sec: float = Field(
+        default=0.4, ge=0.0, description="補間を許容する最大ギャップ秒数"
+    )
+
+
+class LHGSequenceConfig(BaseModel):
+    """LHG 抽出パイプラインのシーケンス分割設定。
+
+    Attributes:
+        min_length: 採用する最小シーケンス長（フレーム数）。これ未満のサブシーケンスは
+            破棄される。
+    """
+
+    min_length: int = Field(
+        default=100, ge=1, description="最小シーケンス長（フレーム数）"
+    )
+
+
+class LHGNormalizationConfig(BaseModel):
+    """LHG 抽出パイプラインの正規化設定。
+
+    Attributes:
+        scope: 正規化統計量の算出スコープ。現在 ``"sequence"`` のみサポート。
+            対話（動画ファイル）単位で mean / std を計算し、同シーケンス内の
+            相対的な動きのみを学習するように設計されている。
+    """
+
+    scope: str = Field(
+        default="sequence",
+        pattern=r"^sequence$",
+        description="正規化スコープ",
+    )
+
+
+class LHGOutputConfig(BaseModel):
+    """LHG 抽出パイプラインの出力設定。
+
+    Attributes:
+        prefix: 出力ファイル名のプレフィックス。``None`` の場合は Extractor 種別から
+            自動決定（``deca`` → ``"deca"``, ``deep3d`` / ``3ddfa`` → ``"bfm"``,
+            ``smirk`` → ``"smirk"``）。
+        shape_aggregation: シーケンス内 shape 係数の集約方法。``"median"``,
+            ``"first"``, ``"mean"`` のいずれか。
+    """
+
+    prefix: Optional[str] = Field(
+        default=None, description="ファイル名プレフィックス（Noneなら自動）"
+    )
+    shape_aggregation: str = Field(
+        default="median",
+        pattern=r"^(median|first|mean)$",
+        description="shape 係数の集約方法",
+    )
+
+
+class LHGExtractConfig(BaseModel):
+    """LHG 頭部特徴量抽出パイプラインの設定。
+
+    ``flare.pipeline.lhg_batch.LHGBatchPipeline`` で使用される設定モデル。
+    設計の詳細は ``docs/design/lhg_extract_pipeline.md`` を参照。
+
+    Attributes:
+        interpolation: 補間サブ設定。
+        sequence: シーケンス分割サブ設定。
+        normalization: 正規化サブ設定。
+        output: 出力サブ設定。
+    """
+
+    interpolation: LHGInterpolationConfig = Field(
+        default_factory=LHGInterpolationConfig, description="補間設定"
+    )
+    sequence: LHGSequenceConfig = Field(
+        default_factory=LHGSequenceConfig, description="シーケンス分割設定"
+    )
+    normalization: LHGNormalizationConfig = Field(
+        default_factory=LHGNormalizationConfig, description="正規化設定"
+    )
+    output: LHGOutputConfig = Field(
+        default_factory=LHGOutputConfig, description="出力設定"
+    )
+
+
 class PipelineConfig(BaseModel):
     """FLAREパイプラインのルート設定モデル。
 
@@ -242,6 +345,9 @@ class PipelineConfig(BaseModel):
     )
     checkpoint: CheckpointConfig = Field(
         default_factory=CheckpointConfig, description="チェックポイント設定"
+    )
+    lhg_extract: LHGExtractConfig = Field(
+        default_factory=LHGExtractConfig, description="LHG 特徴量抽出設定"
     )
 
     @classmethod

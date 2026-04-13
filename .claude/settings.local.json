@@ -41,7 +41,9 @@
       "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest python -m pytest tests/ -v)",
       "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest python tool.py extract --help)",
       "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest python tool.py render --help)",
-      "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest python tool.py extract --input-dir data/videos --output-dir data/features --route flame --extractor deca --gpu 0 --batch-size 32 --dry-run)"
+      "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest python tool.py extract --input-dir data/videos --output-dir data/features --route flame --extractor deca --gpu 0 --batch-size 32 --dry-run)",
+      "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest --with scipy python -m pytest tests/test_interp.py tests/test_rotation_interp.py -v)",
+      "Bash(PYTHONIOENCODING=utf-8 uv run --with pydantic --with pyyaml --with loguru --with \"opencv-python\" --with numpy --with mediapipe --with torch --with click --with pytest --with scipy python -m pytest tests/test_lhg_batch.py -v)"
     ]
   }
 }

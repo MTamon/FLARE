@@ -1,0 +1,41 @@
+# FaceDecoderNet 学習設定
+#
+# 使用例:
+#   python scripts/train_face_decoder.py \
+#       --video ./data/target_person.mp4 \
+#       --deca-path ./checkpoints/deca_model.tar \
+#       --output-dir ./checkpoints/face_decoder/person01/ \
+#       --config configs/train_face_decoder.yaml
+#
+# CLI フラグと併用可能。CLI フラグが優先される。
+
+training:
+  # 学習エポック数。
+  # 2000-5000 フレーム程度のデータなら 100 epoch で概ね収束。
+  # 品質を求める場合は 200-300 epoch 推奨。
+  epochs: 100
+
+  # バッチサイズ。
+  # VRAM 12GB: batch_size=16, 24GB: batch_size=32 が目安。
+  batch_size: 16
+
+  # 学習率。Adam optimizer。
+  # 1e-4 が安定的。収束が遅い場合は 3e-4 を試す。
+  lr: 1.0e-4
+
+  # Perceptual loss (VGG-16) の重み。
+  # 0.0: L1 のみ (高速、ややぼやけ)
+  # 0.5: L1 + Perceptual (推奨バランス)
+  # 1.0: Perceptual 寄り (テクスチャ重視)
+  perceptual_weight: 0.5
+
+  # 動画から抽出する最大フレーム数。
+  # 5000 程度で十分な品質が得られることが多い。
+  max_frames: 10000
+
+  # チェックポイント保存間隔 (エポック)。
+  save_interval: 10
+
+  # サンプル画像保存間隔 (エポック)。
+  # 学習進捗の確認用。1 にすると毎エポック保存。
+  sample_interval: 5
