@@ -101,20 +101,20 @@ class TestPipelineConfigFromYaml:
             },
             "extractor": {
                 "type": "deca",
-                "model_path": "./checkpoints/deca_model.tar",
+                "model_path": "./checkpoints/deca/deca_model.tar",
                 "input_size": 224,
                 "return_keys": ["shape", "exp", "pose", "detail"],
             },
             "lhg_model": {
                 "type": "learning2listen",
-                "model_path": "./checkpoints/l2l_vqvae.pth",
+                "model_path": "./checkpoints/l2l/l2l_vqvae.pth",
                 "window_size": 64,
                 "codebook_size": 256,
             },
             "renderer": {
                 "type": "flash_avatar",
                 "model_path": "./checkpoints/flashavatar/",
-                "source_image": "./data/source_portrait.png",
+                "source_image": "./data/source_images/source_portrait.png",
                 "output_size": [512, 512],
             },
             "audio": {
@@ -152,7 +152,7 @@ class TestPipelineConfigFromYaml:
         assert len(config.pipeline.converter_chain) == 2
         assert config.pipeline.converter_chain[0] == {"type": "deca_to_flame"}
         assert config.extractor.type == "deca"
-        assert config.renderer.source_image == "./data/source_portrait.png"
+        assert config.renderer.source_image == "./data/source_images/source_portrait.png"
         assert config.lhg_model.codebook_size == 256
         assert config.audio.n_mels == 128
         assert config.buffer.overflow_policy == "drop_oldest"

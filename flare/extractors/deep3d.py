@@ -16,7 +16,7 @@ Example:
     Deep3DFaceReconExtractorの使用::
 
         extractor = Deep3DFaceReconExtractor(
-            model_path="./checkpoints/deep3d_epoch20.pth",
+            model_path="./checkpoints/deep3d/deep3d_epoch20.pth",
             device="cuda:0",
         )
         params = extractor.extract(image_tensor)
@@ -81,9 +81,9 @@ class Deep3DFaceReconExtractor(BaseExtractor):
 
     def __init__(
         self,
-        model_path: str = "./checkpoints/deep3d_epoch20.pth",
+        model_path: str = "./checkpoints/deep3d/deep3d_epoch20.pth",
         device: str = "cuda:0",
-        bfm_path: str = "./checkpoints/BFM/BFMmodelfront.mat",
+        bfm_path: str = "./checkpoints/deep3d/BFM/BFMmodelfront.mat",
         deep3d_dir: Optional[str] = None,
     ) -> None:
         """Deep3DFaceReconExtractorを初期化する。

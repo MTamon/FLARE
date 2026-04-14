@@ -23,7 +23,7 @@ FLAME モデル構造 (generic_model.pkl):
 Example:
     基本的な使用::
 
-        renderer = FLAMEMeshRenderer("./checkpoints/generic_model.pkl")
+        renderer = FLAMEMeshRenderer("./checkpoints/flame/generic_model.pkl")
         image = renderer.render(
             shape=np.zeros(100),
             expression=np.zeros(50),

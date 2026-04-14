@@ -13,7 +13,7 @@ Example:
     SMIRKExtractorの使用::
 
         extractor = SMIRKExtractor(
-            model_path="./checkpoints/smirk_model.pt",
+            model_path="./checkpoints/smirk/smirk_model.pt",
             device="cuda:0",
         )
         params = extractor.extract(image_tensor)
@@ -76,7 +76,7 @@ class SMIRKExtractor(BaseExtractor):
 
     def __init__(
         self,
-        model_path: str = "./checkpoints/smirk_encoder.pt",
+        model_path: str = "./checkpoints/smirk/smirk_encoder.pt",
         device: str = "cuda:0",
         smirk_dir: Optional[str] = None,
     ) -> None:

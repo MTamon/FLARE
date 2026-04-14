@@ -1,0 +1,58 @@
+# FLARE リアルタイムパイプライン設定 (BFM ルート: Deep3D + PIRender)
+#
+# 使用例:
+#   python examples/realtime_extract.py \
+#       --config configs/realtime_bfm.yaml \
+#       --source 0
+#
+# 注意: PIRender はソース画像 (対象人物の正面顔) が必須です。
+#       source_image に対象人物の画像パスを設定してください。
+#
+# 詳細: docs/guide_realtime.md, docs/guide_bfm_visualization.md
+
+pipeline:
+  name: realtime_bfm
+  fps: 30
+  device: cuda:0
+  converter_chain: []  # BFM → PIRender は直接対応のため変換不要
+
+extractor:
+  type: deep3d
+  model_path: ./checkpoints/deep3d/deep3d_epoch20.pth
+  input_size: 224
+  return_keys:
+    - id
+    - exp
+    - pose
+
+renderer:
+  type: pirender
+  model_path: ./checkpoints/pirender/epoch_00190_iteration_000400000_checkpoint.pt
+  source_image: ./data/source_images/source_portrait.png  # ← 要設定
+  output_size: [256, 256]
+
+lhg_model:
+  type: learning2listen
+  model_path: ./checkpoints/l2l/l2l_vqvae.pth
+  window_size: 64
+  codebook_size: 256
+
+audio:
+  sample_rate: 16000
+  feature_type: mel
+  n_mels: 128
+
+buffer:
+  max_size: 256
+  timeout_sec: 0.5
+  overflow_policy: drop_oldest
+
+device_map:
+  extractor: cuda:0
+  lhg_model: cuda:0
+  renderer: cuda:0
+
+logging:
+  level: INFO
+  file: ./logs/realtime_bfm.log
+  rotation: 10 MB

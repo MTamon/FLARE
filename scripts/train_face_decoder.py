@@ -21,7 +21,7 @@
 
     python scripts/train_face_decoder.py \\
         --video ./data/target_person.mp4 \\
-        --deca-path ./checkpoints/deca_model.tar \\
+        --deca-path ./checkpoints/deca/deca_model.tar \\
         --output-dir ./checkpoints/face_decoder/person01/ \\
         --config configs/train_face_decoder.yaml \\
         --device cuda:0
@@ -549,7 +549,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--deca-path",
-        default="./checkpoints/deca_model.tar",
+        default="./checkpoints/deca/deca_model.tar",
         help="DECA チェックポイントパス",
     )
     parser.add_argument(

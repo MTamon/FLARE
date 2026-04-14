@@ -24,7 +24,7 @@ LHG パイプライン (``lhg-extract``) で抽出した npz ファイルから
     python scripts/demo_visualize.py \\
         --npz data/movements/data001/comp/deca_comp_00000_04499.npz \\
         --mode mesh \\
-        --flame-model ./checkpoints/generic_model.pkl \\
+        --flame-model ./checkpoints/flame/generic_model.pkl \\
         --output demo_mesh.mp4
 
 **ニューラルデコーダ可視化**
@@ -45,7 +45,7 @@ LHG パイプライン (``lhg-extract``) で抽出した npz ファイルから
     python scripts/demo_visualize.py \\
         --npz-dir data/movements/data001/comp/ \\
         --mode mesh \\
-        --flame-model ./checkpoints/generic_model.pkl \\
+        --flame-model ./checkpoints/flame/generic_model.pkl \\
         --output demo_all.mp4
 
 **画像として保存 (動画ではなく)**
@@ -55,7 +55,7 @@ LHG パイプライン (``lhg-extract``) で抽出した npz ファイルから
     python scripts/demo_visualize.py \\
         --npz data/movements/data001/comp/deca_comp_00000_04499.npz \\
         --mode mesh \\
-        --flame-model ./checkpoints/generic_model.pkl \\
+        --flame-model ./checkpoints/flame/generic_model.pkl \\
         --output-dir demo_frames/ \\
         --save-frames
 """
@@ -354,7 +354,7 @@ def parse_args() -> argparse.Namespace:
     # Mesh モード用
     parser.add_argument(
         "--flame-model",
-        default="./checkpoints/generic_model.pkl",
+        default="./checkpoints/flame/generic_model.pkl",
         help="FLAME generic_model.pkl のパス (mesh モード用)",
     )
 

@@ -192,7 +192,7 @@ pipeline:
   fps: 30
 extractor:
   type: deca
-  model_path: ./checkpoints/deca_model.tar
+  model_path: ./checkpoints/deca/deca_model.tar
   input_size: 224
 lhg_extract:
   interpolation:

@@ -23,7 +23,7 @@ FLARE は 2 つのルート (Route A: BFM, Route B: FLAME) をサポートして
 # configs/realtime_flame.yaml
 extractor:
   type: deca                              # ← ここを変更
-  model_path: ./checkpoints/deca_model.tar
+  model_path: ./checkpoints/deca/deca_model.tar
 
 renderer:
   type: flash_avatar                      # ← ここを変更
@@ -40,12 +40,12 @@ pipeline:
 # configs/realtime_bfm.yaml
 extractor:
   type: deep3d                            # ← ここを変更
-  model_path: ./checkpoints/deep3d_epoch20.pth
+  model_path: ./checkpoints/deep3d/deep3d_epoch20.pth
 
 renderer:
   type: pirender                          # ← ここを変更
   model_path: ./checkpoints/pirender/epoch_00190_iteration_000400000_checkpoint.pt
-  source_image: ./data/source_portrait.png  # ← PIRender 必須
+  source_image: ./data/source_images/source_portrait.png  # ← PIRender 必須
 
 pipeline:
   converter_chain: []                     # ← 変換不要
@@ -73,7 +73,7 @@ python tool.py lhg-extract \
     --path ./data/multimodal_dialogue_formed \
     --output ./data/movements \
     --extractor deca \
-    --model-path ./checkpoints/deca_model.tar
+    --model-path ./checkpoints/deca/deca_model.tar
 ```
 
 ### BFM ルート
@@ -92,7 +92,7 @@ python tool.py lhg-extract \
     --path ./data/multimodal_dialogue_formed \
     --output ./data/movements \
     --extractor deep3d \
-    --model-path ./checkpoints/deep3d_epoch20.pth
+    --model-path ./checkpoints/deep3d/deep3d_epoch20.pth
 ```
 
 ### 出力の違い

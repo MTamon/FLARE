@@ -1,0 +1,57 @@
+# FLARE リアルタイムパイプライン設定 (FLAME ルート: DECA + FlashAvatar)
+#
+# 使用例:
+#   python examples/realtime_extract.py \
+#       --config configs/realtime_flame.yaml \
+#       --source 0
+#
+# 詳細: docs/guide_realtime.md
+
+pipeline:
+  name: realtime_flame
+  fps: 30
+  device: cuda:0
+  converter_chain:
+    - type: deca_to_flame
+
+extractor:
+  type: deca
+  model_path: ./checkpoints/deca/deca_model.tar
+  input_size: 224
+  return_keys:
+    - shape
+    - exp
+    - pose
+    - cam
+
+renderer:
+  type: flash_avatar
+  model_path: ./checkpoints/flashavatar/
+  source_image: null  # FlashAvatar はソース画像不要
+  output_size: [512, 512]
+
+lhg_model:
+  type: learning2listen
+  model_path: ./checkpoints/l2l/l2l_vqvae.pth
+  window_size: 64
+  codebook_size: 256
+
+audio:
+  sample_rate: 16000
+  feature_type: mel
+  n_mels: 128
+
+buffer:
+  max_size: 256
+  timeout_sec: 0.5
+  overflow_policy: drop_oldest
+
+device_map:
+  extractor: cuda:0
+  lhg_model: cuda:0
+  renderer: cuda:0
+
+logging:
+  level: INFO
+  file: ./logs/realtime_flame.log
+  rotation: 10 MB

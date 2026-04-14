@@ -19,15 +19,16 @@ Webカメラ/動画
 
 ## 前提条件
 
+- FLARE 環境のセットアップ済み → [環境構築ガイド](guide_setup.md)
 - CUDA 対応 GPU (RTX 2080 Ti 以上推奨)
 - チェックポイントファイル:
 
 | ルート | Extractor | チェックポイント |
 |--------|-----------|-----------------|
-| FLAME  | DECA      | `checkpoints/deca_model.tar` |
-| FLAME  | SMIRK     | `checkpoints/smirk_encoder.pt` |
-| BFM    | Deep3D    | `checkpoints/deep3d_epoch20.pth` |
-| BFM    | 3DDFA     | `checkpoints/mb1_120x120.onnx` |
+| FLAME  | DECA      | `checkpoints/deca/deca_model.tar` |
+| FLAME  | SMIRK     | `checkpoints/smirk/smirk_encoder.pt` |
+| BFM    | Deep3D    | `checkpoints/deep3d/deep3d_epoch20.pth` |
+| BFM    | 3DDFA     | `checkpoints/3ddfa/mb1_120x120.onnx` |
 
 - レンダラチェックポイント:
 
@@ -35,6 +36,8 @@ Webカメラ/動画
 |--------|--------------|-----------------|
 | FLAME  | FlashAvatar  | `checkpoints/flashavatar/` (対象人物ごとに学習済み) |
 | BFM    | PIRender     | `checkpoints/pirender/epoch_00190_*.pt` |
+
+各チェックポイントディレクトリの README.md に入手方法が記載されています。
 
 ## 設定ファイルの作成
 
@@ -53,18 +56,19 @@ pipeline:
 
 extractor:
   type: deca
-  model_path: ./checkpoints/deca_model.tar
+  model_path: ./checkpoints/deca/deca_model.tar
   input_size: 224
 
 renderer:
   type: flash_avatar
   model_path: ./checkpoints/flashavatar/person01/
   source_image: null  # FlashAvatar は不要
+  source_image: null  # FlashAvatar は不要
   output_size: [512, 512]
 
 lhg_model:
   type: learning2listen
-  model_path: ./checkpoints/l2l_vqvae.pth
+  model_path: ./checkpoints/l2l/l2l_vqvae.pth
   window_size: 64
 
 audio:
@@ -94,13 +98,13 @@ pipeline:
 
 extractor:
   type: deep3d
-  model_path: ./checkpoints/deep3d_epoch20.pth
+  model_path: ./checkpoints/deep3d/deep3d_epoch20.pth
   input_size: 224
 
 renderer:
   type: pirender
   model_path: ./checkpoints/pirender/epoch_00190_iteration_000400000_checkpoint.pt
-  source_image: ./data/source_portrait.png  # PIRender はソース画像が必要
+  source_image: ./data/source_images/source_portrait.png  # PIRender はソース画像が必要
   output_size: [256, 256]
 
 device_map:

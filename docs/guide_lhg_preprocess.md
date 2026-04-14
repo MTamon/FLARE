@@ -47,14 +47,18 @@ data/multimodal_dialogue_formed/
 
 ## ステップ 2: チェックポイントの配置
 
+FLARE 環境のセットアップは [環境構築ガイド](guide_setup.md) を参照してください。
+
 使用する Extractor に応じてモデルファイルを配置します。
 
 | Extractor | ルート | チェックポイント |
 |-----------|--------|-----------------|
-| DECA | FLAME | `checkpoints/deca_model.tar` |
-| Deep3DFaceRecon | BFM | `checkpoints/deep3d_epoch20.pth` |
-| SMIRK | FLAME | `checkpoints/smirk_encoder.pt` |
-| 3DDFA | BFM | `checkpoints/mb1_120x120.onnx` |
+| DECA | FLAME | `checkpoints/deca/deca_model.tar` |
+| Deep3DFaceRecon | BFM | `checkpoints/deep3d/deep3d_epoch20.pth` |
+| SMIRK | FLAME | `checkpoints/smirk/smirk_encoder.pt` |
+| 3DDFA | BFM | `checkpoints/3ddfa/mb1_120x120.onnx` |
+
+各チェックポイントディレクトリの README.md に入手方法が記載されています。
 
 ## ステップ 3: 設定ファイルの選択
 
@@ -111,7 +115,7 @@ python tool.py lhg-extract \
     --path ./data/multimodal_dialogue_formed \
     --output ./data/movements \
     --extractor deca \
-    --model-path ./checkpoints/deca_model.tar
+    --model-path ./checkpoints/deca/deca_model.tar
 
 # GPU 指定
 python tool.py lhg-extract \

@@ -9,7 +9,7 @@ PIRender を使ってフォトリアルな顔画像動画を生成する。
     # 単一 npz → 動画
     python examples/visualize_bfm_pirender.py \\
         --npz data/movements/data001/comp/bfm_comp_00000_04499.npz \\
-        --source-image ./data/source_portrait.png \\
+        --source-image ./data/source_images/source_portrait.png \\
         --pirender-model ./checkpoints/pirender/epoch_00190_iteration_000400000_checkpoint.pt \\
         --pirender-dir ./PIRender \\
         --output demo_bfm.mp4
@@ -17,7 +17,7 @@ PIRender を使ってフォトリアルな顔画像動画を生成する。
     # ディレクトリ内の全 npz を連結
     python examples/visualize_bfm_pirender.py \\
         --npz-dir data/movements/data001/comp/ \\
-        --source-image ./data/source_portrait.png \\
+        --source-image ./data/source_images/source_portrait.png \\
         --pirender-model ./checkpoints/pirender/epoch_00190_*.pt \\
         --output demo_bfm_all.mp4
 

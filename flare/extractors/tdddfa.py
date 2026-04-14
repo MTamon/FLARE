@@ -16,7 +16,7 @@ Example:
     TDDFAExtractorの使用::
 
         extractor = TDDFAExtractor(
-            model_path="./checkpoints/mb1_120x120.onnx",
+            model_path="./checkpoints/3ddfa/mb1_120x120.onnx",
             device="cpu",
         )
         params = extractor.extract(image_tensor)
@@ -71,7 +71,7 @@ class TDDFAExtractor(BaseExtractor):
 
     def __init__(
         self,
-        model_path: str = "./checkpoints/mb1_120x120.onnx",
+        model_path: str = "./checkpoints/3ddfa/mb1_120x120.onnx",
         device: str = "cpu",
         tddfa_dir: Optional[str] = None,
     ) -> None:

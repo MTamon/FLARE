@@ -13,7 +13,7 @@ Example:
     L2LModelの使用::
 
         model = L2LModel(
-            model_path="./checkpoints/l2l_vqvae.pth",
+            model_path="./checkpoints/l2l/l2l_vqvae.pth",
             device="cuda:0",
             window_size=64,
             codebook_size=256,
@@ -52,7 +52,7 @@ class L2LModel(BaseLHGModel):
 
     def __init__(
         self,
-        model_path: str = "./checkpoints/l2l_vqvae.pth",
+        model_path: str = "./checkpoints/l2l/l2l_vqvae.pth",
         device: str = "cuda:0",
         window_size: int = 64,
         codebook_size: int = 256,

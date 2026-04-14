@@ -16,7 +16,7 @@ Example:
     DECAExtractorの使用::
 
         extractor = DECAExtractor(
-            model_path="./checkpoints/deca_model.tar",
+            model_path="./checkpoints/deca/deca_model.tar",
             device="cuda:0",
         )
         params = extractor.extract(image_tensor)
@@ -85,7 +85,7 @@ class DECAExtractor(BaseExtractor):
 
     def __init__(
         self,
-        model_path: str = "./checkpoints/deca_model.tar",
+        model_path: str = "./checkpoints/deca/deca_model.tar",
         device: str = "cuda:0",
         deca_dir: Optional[str] = None,
     ) -> None:

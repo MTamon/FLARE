@@ -60,7 +60,7 @@ class ExtractorConfig(BaseModel):
     """
 
     type: str = Field(default="deca", description="Extractor種別")
-    model_path: str = Field(default="./checkpoints/deca_model.tar", description="モデルパス")
+    model_path: str = Field(default="./checkpoints/deca/deca_model.tar", description="モデルパス")
     input_size: int = Field(default=224, ge=1, description="入力画像サイズ")
     return_keys: list[str] = Field(
         default_factory=lambda: ["shape", "exp", "pose", "detail"],
@@ -80,7 +80,7 @@ class RendererConfig(BaseModel):
 
     type: str = Field(default="flash_avatar", description="Renderer種別")
     model_path: str = Field(
-        default="./checkpoints/flashavatar/", description="モデルパス"
+        default="./checkpoints/flashavatar/", description="FlashAvatarモデルディレクトリパス"
     )
     source_image: Optional[str] = Field(
         default=None, description="ソース肖像画像パス（setup()時に使用）"
@@ -102,7 +102,7 @@ class LHGModelConfig(BaseModel):
 
     type: str = Field(default="learning2listen", description="LHGモデル種別")
     model_path: str = Field(
-        default="./checkpoints/l2l_vqvae.pth", description="モデルパス"
+        default="./checkpoints/l2l/l2l_vqvae.pth", description="モデルパス"
     )
     window_size: int = Field(default=64, ge=1, description="ウィンドウフレーム数")
     codebook_size: int = Field(default=256, ge=1, description="コードブックサイズ")

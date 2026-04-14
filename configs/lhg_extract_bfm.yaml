@@ -18,7 +18,7 @@ pipeline:
 
 extractor:
   type: deep3d
-  model_path: ./checkpoints/deep3d_epoch20.pth
+  model_path: ./checkpoints/deep3d/deep3d_epoch20.pth
   input_size: 224
   return_keys:
     - id
