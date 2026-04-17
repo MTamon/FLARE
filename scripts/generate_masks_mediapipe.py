@@ -130,11 +130,8 @@ def _generate_mouth_mask(
     outer_pts = _landmarks_to_points(landmarks, w, h, _LIPS_OUTER_IDX)
 
     hull_inner = cv2.convexHull(inner_pts)
-    hull_outer = cv2.convexHull(outer_pts)
-    all_pts = np.vstack([inner_pts, outer_pts])
-    hull_all = cv2.convexHull(all_pts)
 
-    cv2.fillPoly(mask, [hull_all], 255)
+    cv2.fillPoly(mask, [hull_inner], 255)
 
     if dilate_px > 0:
         kernel = cv2.getStructuringElement(

@@ -158,6 +158,37 @@ def main() -> None:
         source_fps = 30.0
     logger.info("動画フレーム数: {}, 元 FPS: {:.1f}", total_frames, source_fps)
 
+    # ---- 固定クロップ bbox キャリブレーション (先頭最大 30 フレームの中央値) ----
+    # FlashAvatar は固定クロップを前提とする。per-frame tracking crop だと
+    # cam パラメータの座標系がフレームごとに変わり 3DGS 学習が不安定になる。
+    _CALIB_FRAMES = 30
+    _calib_bboxes: list[tuple[int, int, int, int]] = []
+    _calib_read = 0
+    while _calib_read < _CALIB_FRAMES:
+        ret, _frame = cap.read()
+        if not ret:
+            break
+        _b = face_detector.detect(_frame)
+        if _b is not None:
+            _calib_bboxes.append(_b)
+        _calib_read += 1
+
+    if not _calib_bboxes:
+        logger.error(
+            "固定クロップ用の顔検出に失敗しました (先頭 {} フレームで顔を検出できず)。",
+            _CALIB_FRAMES,
+        )
+        sys.exit(1)
+
+    fixed_bbox: tuple[int, int, int, int] = tuple(  # type: ignore[assignment]
+        int(v) for v in np.median(np.array(_calib_bboxes), axis=0)
+    )
+    logger.info(
+        "固定クロップ bbox: {} (先頭 {} フレームの中央値)",
+        fixed_bbox, len(_calib_bboxes),
+    )
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
     # FPS サブサンプリング設定
     # floor(raw_idx * target_fps / source_fps) が前フレームから増加したときだけ採用する。
     target_fps = args.target_fps
@@ -211,13 +242,9 @@ def main() -> None:
             frame_idx += 1
             continue
 
-        # ---- 顔検出 + DECA 抽出 ----
+        # ---- DECA 抽出 (固定 bbox, margin_scale=1.25) ----
         try:
-            bbox = face_detector.detect(frame_bgr)
-            if bbox is None:
-                raise RuntimeError("顔を検出できませんでした")
-
-            cropped = face_detector.crop_and_align(frame_bgr, bbox, size=224)
+            cropped = face_detector.crop_and_align(frame_bgr, fixed_bbox, size=224)
             image_tensor = _frame_to_tensor(cropped, args.device)
 
             with torch.no_grad():
@@ -229,7 +256,7 @@ def main() -> None:
             last_good_codedict = codedict_cpu
 
         except Exception as e:
-            # 顔未検出・推論エラー → キャリーフォワード
+            # DECA 推論エラー → キャリーフォワード
             if last_good_codedict is not None:
                 torch.save(last_good_codedict, str(pt_path))
                 carry_forward_frames.append(frame_idx)

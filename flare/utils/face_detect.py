@@ -356,6 +356,7 @@ class FaceDetector:
         frame: np.ndarray,
         bbox: tuple[int, int, int, int],
         size: int = 224,
+        margin_scale: float = 1.25,
     ) -> np.ndarray:
         """バウンディングボックスで顔領域を切り出し、指定サイズにリサイズする。
 
@@ -367,6 +368,8 @@ class FaceDetector:
             bbox: 顔のバウンディングボックス ``(x1, y1, x2, y2)``。
                 ``detect()`` の戻り値をそのまま渡す。
             size: 出力画像の一辺のサイズ（ピクセル）。正方形画像を生成する。
+            margin_scale: bbox に乗じる余白倍率。DECA の訓練分布に合わせ
+                デフォルト 1.25（DECA 公式 inference 時の scale margin と同値）。
 
         Returns:
             クロッピング・リサイズ済みの顔画像。形状は ``(size, size, 3)``、
@@ -377,7 +380,7 @@ class FaceDetector:
 
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
-        half_side = max(x2 - x1, y2 - y1) // 2
+        half_side = int(max(x2 - x1, y2 - y1) * margin_scale / 2)
 
         sq_x1 = cx - half_side
         sq_y1 = cy - half_side

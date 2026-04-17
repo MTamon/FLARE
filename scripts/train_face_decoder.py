@@ -315,10 +315,12 @@ class VideoFrameDataset(Dataset):
 
                     exp_vec = seg["expression"][local_idx]
                     angle_vec = seg["angle"][local_idx]
-                    parts = [exp_vec, angle_vec]
-                    if seg["jaw_pose"] is not None:
-                        parts.append(seg["jaw_pose"][local_idx])
-                    cond = np.concatenate(parts).astype(np.float32)
+                    jaw_vec = (
+                        seg["jaw_pose"][local_idx]
+                        if seg["jaw_pose"] is not None
+                        else np.zeros(3, dtype=np.float32)
+                    )
+                    cond = np.concatenate([exp_vec, angle_vec, jaw_vec]).astype(np.float32)
 
                     all_frames.append(target_rgb.astype(np.float32) / 255.0)
                     all_conditions.append(cond)
