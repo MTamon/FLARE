@@ -142,6 +142,33 @@ python scripts/train_face_decoder.py \
 | `perceptual_weight` | 0.5 | VGG Perceptual Loss の重み (0 で L1 のみ) |
 | `max_frames` | 10000 | 動画から抽出する最大フレーム数 |
 
+#### wandb でログを観察する場合
+
+```bash
+# --wandb フラグを追加するだけで有効化
+python scripts/train_face_decoder.py \
+    --video ./data/multimodal_dialogue_formed/data001/comp.mp4 \
+    --deca-path ./checkpoints/deca/deca_model.tar \
+    --output-dir ./checkpoints/face_decoder/comp01/ \
+    --wandb \
+    --wandb-project my-project \
+    --wandb-run-name comp01_run1 \
+    --wandb-tags "person01,cuda128"
+```
+
+wandb ダッシュボードで確認できる項目:
+
+| 項目 | 内容 |
+|------|------|
+| `train/loss` | 合計損失 (L1 + perceptual) |
+| `train/l1_loss` | L1 損失 |
+| `train/perceptual_loss` | VGG Perceptual 損失 |
+| `train/lr` | 現在の学習率 (CosineAnnealing) |
+| `train/epoch_sec` | 1 エポックの処理時間 |
+| `samples` | source \| pred \| target グリッド画像 |
+
+設定ファイルで恒常的に有効化する場合は `configs/train_face_decoder.yaml` の `wandb.enabled: true` に変更してください。
+
 #### 抽出済み npz を使う場合
 
 `lhg-extract` で既に npz を抽出済みなら、動画 + npz から効率的にデータを構築できます:

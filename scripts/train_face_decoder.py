@@ -76,6 +76,13 @@ try:
 except ImportError:
     _HAS_YAML = False
 
+try:
+    import wandb as _wandb
+
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
+
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -369,6 +376,9 @@ def train(
     device: str = "cuda:0",
     save_interval: int = 10,
     sample_interval: int = 5,
+    wandb_project: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
+    wandb_tags: Optional[list[str]] = None,
 ) -> None:
     """FaceDecoderNet の学習を実行する。
 
@@ -382,6 +392,9 @@ def train(
         device: 学習デバイス。
         save_interval: チェックポイント保存間隔 (エポック)。
         sample_interval: サンプル画像保存間隔 (エポック)。
+        wandb_project: wandb プロジェクト名。None の場合は wandb 無効。
+        wandb_run_name: wandb run 名。None の場合は自動生成。
+        wandb_tags: wandb タグリスト。
     """
     from flare.decoders.face_decoder_net import FaceDecoderNet, PerceptualLoss
 
@@ -400,6 +413,29 @@ def train(
 
     dev = torch.device(device)
     cond_dim = dataset.cond_dim
+
+    # wandb 初期化
+    wb_run = None
+    if wandb_project is not None:
+        if not _HAS_WANDB:
+            print("[Train] wandb が見つかりません。pip install wandb を実行してください。")
+        else:
+            wb_run = _wandb.init(
+                project=wandb_project,
+                name=wandb_run_name,
+                tags=wandb_tags or [],
+                config={
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "lr": lr,
+                    "perceptual_weight": perceptual_weight,
+                    "cond_dim": cond_dim,
+                    "num_samples": len(dataset),
+                    "device": device,
+                    "output_dir": str(out_path),
+                },
+            )
+            print(f"[Train] wandb run: {wb_run.name} ({wb_run.url})")
 
     # モデル構築
     model = FaceDecoderNet(
@@ -437,6 +473,8 @@ def train(
 
     for epoch in range(1, epochs + 1):
         model.train()
+        epoch_l1 = 0.0
+        epoch_perceptual = 0.0
         epoch_loss = 0.0
         n_batches = 0
         t0 = time.time()
@@ -451,29 +489,38 @@ def train(
 
             pred = model(source_batch, cond)
 
-            loss = l1_loss_fn(pred, target)
+            l1 = l1_loss_fn(pred, target)
+            loss = l1
+            p_loss = torch.tensor(0.0)
             if perceptual_loss_fn is not None and perceptual_weight > 0:
-                loss = loss + perceptual_weight * perceptual_loss_fn(pred, target)
+                p_loss = perceptual_loss_fn(pred, target)
+                loss = loss + perceptual_weight * p_loss
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            epoch_l1 += l1.item()
+            epoch_perceptual += p_loss.item()
             epoch_loss += loss.item()
             n_batches += 1
 
         scheduler.step()
         avg_loss = epoch_loss / max(n_batches, 1)
+        avg_l1 = epoch_l1 / max(n_batches, 1)
+        avg_perceptual = epoch_perceptual / max(n_batches, 1)
+        current_lr = scheduler.get_last_lr()[0]
         elapsed = time.time() - t0
 
         print(
             f"  Epoch {epoch:04d}/{epochs} | "
             f"loss={avg_loss:.6f} | "
-            f"lr={scheduler.get_last_lr()[0]:.2e} | "
+            f"lr={current_lr:.2e} | "
             f"{elapsed:.1f}s"
         )
 
         # サンプル画像保存
+        sample_grid: Optional[np.ndarray] = None
         if epoch % sample_interval == 0 or epoch == 1:
             model.eval()
             with torch.no_grad():
@@ -491,8 +538,8 @@ def train(
                     row = np.concatenate([src_np, pred_np, tgt_np], axis=1)
                     rows.append(row)
 
-                grid = np.concatenate(rows, axis=0)
-                grid_bgr = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)
+                sample_grid = np.concatenate(rows, axis=0)
+                grid_bgr = cv2.cvtColor(sample_grid, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(str(samples_dir / f"epoch_{epoch:04d}.png"), grid_bgr)
 
         # チェックポイント保存
@@ -517,6 +564,30 @@ def train(
                 },
                 str(out_path / "face_decoder.pth"),
             )
+
+        # wandb ロギング
+        if wb_run is not None:
+            log_dict: dict[str, Any] = {
+                "train/loss": avg_loss,
+                "train/l1_loss": avg_l1,
+                "train/lr": current_lr,
+                "train/epoch_sec": elapsed,
+                "epoch": epoch,
+            }
+            if perceptual_weight > 0:
+                log_dict["train/perceptual_loss"] = avg_perceptual
+            if avg_loss < best_loss or epoch == 1:
+                log_dict["train/best_loss"] = best_loss
+            if sample_grid is not None:
+                log_dict["samples"] = _wandb.Image(
+                    sample_grid,
+                    caption=f"epoch {epoch} — source | pred | target",
+                )
+            wb_run.log(log_dict, step=epoch)
+
+    if wb_run is not None:
+        wb_run.summary["best_loss"] = best_loss
+        wb_run.finish()
 
     # 学習設定の記録
     train_config = {
@@ -575,6 +646,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save-interval", type=int, default=10)
     parser.add_argument("--sample-interval", type=int, default=5)
+    # wandb
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="wandb へのロギングを有効化",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        default="face-decoder",
+        help="wandb プロジェクト名 (既定: face-decoder)",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        default=None,
+        help="wandb run 名。省略時は自動生成",
+    )
+    parser.add_argument(
+        "--wandb-tags",
+        default=None,
+        help="wandb タグ (カンマ区切り)。例: --wandb-tags person01,cuda128",
+    )
     return parser.parse_args()
 
 
@@ -589,6 +681,16 @@ def main() -> None:
             key_underscore = key.replace("-", "_")
             if hasattr(args, key_underscore) and val is not None:
                 setattr(args, key_underscore, val)
+        # wandb セクションの上書き
+        wb_cfg = cfg.get("wandb", {})
+        if wb_cfg.get("enabled") and not args.wandb:
+            args.wandb = True
+        if wb_cfg.get("project") and args.wandb_project == "face-decoder":
+            args.wandb_project = wb_cfg["project"]
+        if wb_cfg.get("run_name") and args.wandb_run_name is None:
+            args.wandb_run_name = wb_cfg["run_name"]
+        if wb_cfg.get("tags") and args.wandb_tags is None:
+            args.wandb_tags = ",".join(wb_cfg["tags"]) if isinstance(wb_cfg["tags"], list) else wb_cfg["tags"]
 
     dataset = VideoFrameDataset()
 
@@ -605,6 +707,13 @@ def main() -> None:
             max_frames=args.max_frames,
         )
 
+    wandb_project = args.wandb_project if args.wandb else None
+    wandb_tags = (
+        [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
+        if args.wandb_tags
+        else None
+    )
+
     train(
         dataset=dataset,
         output_dir=args.output_dir,
@@ -615,6 +724,9 @@ def main() -> None:
         device=args.device,
         save_interval=args.save_interval,
         sample_interval=args.sample_interval,
+        wandb_project=wandb_project,
+        wandb_run_name=args.wandb_run_name,
+        wandb_tags=wandb_tags,
     )
 
 
