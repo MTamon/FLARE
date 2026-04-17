@@ -135,65 +135,232 @@ FlashAvatar は **対象人物ごとの個別学習** が必要です。
 
 ## 4. FlashAvatar モデルの学習
 
-FlashAvatar のレンダリングを使用するには、対象人物の動画から事前に 3DGS モデルを学習する必要があります。
+FlashAvatar のレンダリングには対象人物ごとの 3DGS モデルが必要です。
+FLARE では **DECA を FLAME トラッカーとして直接使用**することで、
+追加ツール (metrical-tracker) なしで学習パイプラインを完結できます。
 
-### 4.1 入力データの準備
+### 4.0 FLAME モデルアセット (学習に必須)
 
-```
-dataset/<person_id>/
-├── imgs/               # 動画フレーム (00001.jpg, 00002.jpg, ...)
-├── parsing/            # 頭部・口部のセグメンテーションマスク (PNG)
-└── alpha/              # 不透明度マスク (グレースケール PNG)
-```
+FlashAvatar の学習には FLAME の 2 つのアセットが必要です (DECA 抽出とは別途)。
 
-**フレーム数の目安:** 最低 600 フレーム、推奨 2000 フレーム以上
+1. **https://flame.is.tue.mpg.de/** でアカウント登録・ライセンス同意
+2. **FLAME 2020** をダウンロード → `generic_model.pkl` を配置:
+   ```bash
+   cp /path/to/FLAME2020/generic_model.pkl third_party/FlashAvatar/flame/
+   ```
+3. **FLAME Vertex Masks** をダウンロード → 展開して配置:
+   ```bash
+   mkdir -p third_party/FlashAvatar/flame/FLAME_masks
+   cd third_party/FlashAvatar/flame/FLAME_masks
+   unzip /path/to/FLAME_masks.zip
+   cd -
+   # → third_party/FlashAvatar/flame/FLAME_masks/FLAME_masks.pkl が存在すること
+   ```
+
+### 4.1 一括パイプライン (推奨)
+
+`scripts/train_flashavatar.sh` が全ステップを自動実行します。
 
 ```bash
-# ffmpeg でフレーム展開
-mkdir -p dataset/<person_id>/imgs
-ffmpeg -i input_video.mp4 -q:v 2 dataset/<person_id>/imgs/%05d.jpg
+bash scripts/train_flashavatar.sh \
+    --id_name person01 \
+    --video /path/to/person01.mp4 \
+    --device cuda:0 \
+    --iterations 30000
+
+# 高品質学習 (RTX 3090 で約 60 分)
+bash scripts/train_flashavatar.sh \
+    --id_name person01 \
+    --video /path/to/person01.mp4 \
+    --iterations 150000
 ```
 
-### 4.2 FLAME トラッキング
+完了後:
+```
+checkpoints/flashavatar/person01/point_cloud/iteration_30000/point_cloud.ply
+data/flashavatar_training/person01/log/test.avi  # 検証動画
+```
 
-per-frame の FLAME パラメータが必要です。
-[MICA (metrical-tracker)](https://github.com/Zielon/metrical-tracker) を使用します:
+### 4.2 ステップ別実行
+
+`--skip_*` オプションで途中から再開できます:
 
 ```bash
-# metrical-tracker は FlashAvatar とは別途インストール
-# トラッキング結果の配置先:
-# metrical-tracker/output/<person_id>/checkpoint/<frame>.frame
+# Step 1 のみ (フレーム抽出 + DECA)
+bash scripts/train_flashavatar.sh \
+    --id_name person01 --video input.mp4
+
+# Step 2 から再開 (マスク生成から)
+bash scripts/train_flashavatar.sh \
+    --id_name person01 --video input.mp4 \
+    --skip_extract
+
+# Step 4 のみ (学習のみ)
+bash scripts/train_flashavatar.sh \
+    --id_name person01 --video input.mp4 \
+    --skip_extract --skip_masks --skip_convert
+
+# 学習済みモデルで検証動画のみ生成
+bash scripts/train_flashavatar.sh \
+    --id_name person01 --test_only
 ```
 
-### 4.3 学習実行
+### 4.3 各ステップの詳細
+
+**Step 1: フレーム抽出 + DECA per-frame 特徴抽出**
+
+`scripts/extract_deca_frames.py` がフレーム展開と DECA 推論を行います。
+
+```bash
+python scripts/extract_deca_frames.py \
+    --video /path/to/person01.mp4 \
+    --out_dir data/flashavatar_training/person01 \
+    --model_path checkpoints/deca/deca_model.tar \
+    --deca_dir third_party/DECA \
+    --device cuda:0 \
+    --img_size 512
+```
+
+出力:
+```
+data/flashavatar_training/person01/
+├── imgs/00001.jpg, 00002.jpg, ...     # 1-indexed 元フレーム
+├── deca_outputs/00000.pt, 00001.pt, ... # 0-indexed DECA codedict
+└── extract_log.json                   # 処理ログ
+```
+
+DECA codedict の内容 (各フレームの `.pt`):
+```python
+{
+    "shape": Tensor(1, 100),  # FLAME shape (100D)
+    "exp":   Tensor(1, 50),   # 表情 (50D)
+    "pose":  Tensor(1, 6),    # 姿勢: global_rot(3D) + jaw(3D)
+    "cam":   Tensor(1, 3),    # 弱透視カメラ [scale, tx, ty]
+    "tex":   Tensor(1, 50),   # テクスチャ (FlashAvatar では不使用)
+    "light": Tensor(1, 27),   # 照明 (FlashAvatar では不使用)
+}
+```
+
+**Step 2: MediaPipe によるマスク生成**
+
+3 種類のマスクを MediaPipe のみで生成します (外部モデル不要):
+
+```bash
+python scripts/generate_masks_mediapipe.py \
+    --imgs_dir data/flashavatar_training/person01/imgs \
+    --out_dir data/flashavatar_training/person01 \
+    --img_size 512
+```
+
+出力:
+```
+data/flashavatar_training/person01/
+├── parsing/00001_neckhead.png  # 頭部・頸部マスク (二値)
+├── parsing/00001_mouth.png     # 口内マスク (二値)
+├── alpha/00001.jpg             # 前景アルファマスク (グレースケール)
+...
+```
+
+| マスク | 役割 | 生成方法 |
+|--------|------|---------|
+| `_neckhead.png` | 頭部 + 頸部領域を重点的に学習 | MediaPipe FaceMesh 顔輪郭 → 凸包 + 下方向膨張 |
+| `_mouth.png` | 口部の損失に 40× の重みを付加 | MediaPipe FaceMesh 口唇ランドマーク → 凸包 |
+| `alpha.jpg` | 背景との合成 (foreground matting) | MediaPipe SelfieSegmentation |
+
+**Step 3: DECA .pt → FlashAvatar .frame 変換**
+
+FlashAvatar 付属の `FlameConverter` を使用して DECA 出力を
+FlashAvatar の `.frame` 形式に変換します:
 
 ```bash
 cd third_party/FlashAvatar
-
-# 学習 (RTX 3090 で約 30 分 @ 30,000 iterations)
-python train.py \
-    --idname <person_id> \
-    --iterations 30000
-
-# 学習済みチェックポイントの確認
-ls dataset/<person_id>/log/point_cloud/iteration_30000/
-# → point_cloud.ply
+python utils/flame_converter.py \
+    --tracker deca \
+    --input_dir ../../data/flashavatar_training/person01/deca_outputs \
+    --output_dir metrical-tracker/output/person01/checkpoint \
+    --img_size 512,512 \
+    --ext .pt
+cd ../..
 ```
 
-### 4.4 FLARE へのチェックポイント配置
+変換内容 (DECA → FlashAvatar):
+
+| パラメータ | DECA | FlashAvatar | 変換 |
+|---|---|---|---|
+| 表情 `exp` | 50D | `exp` 100D | ゼロパディング |
+| 顎回転 `pose[3:6]` | axis-angle 3D | `jaw` 6D | → rotation_6d |
+| 眼球回転 | なし | `eyes` 12D | 単位回転 × 2 |
+| まぶた | なし | `eyelids` 2D | ゼロ |
+| カメラ `cam` | 弱透視 [s,tx,ty] | `K, R, t` | 弱透視 → 透視投影変換 |
+
+**Step 4: FlashAvatar 学習**
 
 ```bash
-PERSON_ID=<person_id>
-
-# FLARE のチェックポイントディレクトリにコピー
-mkdir -p checkpoints/flashavatar/${PERSON_ID}
-cp -r third_party/FlashAvatar/dataset/${PERSON_ID}/log/point_cloud \
-      checkpoints/flashavatar/${PERSON_ID}/
-
-# 確認
-ls checkpoints/flashavatar/${PERSON_ID}/point_cloud/iteration_30000/
-# → point_cloud.ply が存在すること
+cd third_party/FlashAvatar
+python train.py \
+    --idname person01 \
+    --iterations 30000 \
+    --image_res 512
+cd ../..
 ```
+
+学習の進行:
+- 500 iter ごとに `data/flashavatar_training/person01/log/train/<iter>.jpg` を保存
+- 5000 iter ごとにチェックポイントを保存
+
+| イテレーション数 | 学習時間 (RTX 3090) | 品質 |
+|---|---|---|
+| 5,000 | ~5 分 | 動作確認用 (粗い) |
+| 30,000 | ~20 分 | 基本品質 |
+| 150,000 | ~60 分 | 高品質 (推奨) |
+
+**Step 5: 検証動画生成**
+
+```bash
+cd third_party/FlashAvatar
+python test.py \
+    --idname person01 \
+    --checkpoint data/flashavatar_training/person01/log/ckpt/chkpnt30000.pth
+cd ../..
+# → data/flashavatar_training/person01/log/test.avi (GT 左 / レンダリング 右)
+```
+
+### 4.4 データ構造の全体像
+
+```
+FLARE/
+├── data/flashavatar_training/<id>/
+│   ├── imgs/                    # 動画フレーム (1-indexed, Step 1)
+│   │   ├── 00001.jpg
+│   │   └── ...
+│   ├── deca_outputs/            # DECA per-frame 出力 (Step 1)
+│   │   ├── 00000.pt
+│   │   └── ...
+│   ├── parsing/                 # セグメンテーションマスク (Step 2)
+│   │   ├── 00001_neckhead.png
+│   │   ├── 00001_mouth.png
+│   │   └── ...
+│   ├── alpha/                   # アルファマスク (Step 2)
+│   │   └── 00001.jpg, ...
+│   ├── log/                     # 学習ログ・チェックポイント (Step 4)
+│   │   ├── train/<iter>.jpg     # 学習進捗画像
+│   │   ├── ckpt/chkpnt*.pth     # モデルチェックポイント
+│   │   └── test.avi             # 検証動画 (Step 5)
+│   └── extract_log.json
+├── third_party/FlashAvatar/
+│   ├── dataset/<id>  →          # data/flashavatar_training/<id> へのシンボリックリンク
+│   └── metrical-tracker/output/<id>/checkpoint/
+│       ├── 00000.frame          # .frame ファイル (Step 3)
+│       └── ...
+└── checkpoints/flashavatar/<id>/
+    └── point_cloud  →           # data/flashavatar_training/<id>/log/point_cloud へのシンボリックリンク
+```
+
+**インデックスのずれについて:**
+FlashAvatar の `Scene_mica` は `frame_delta=1` を採用しており、
+`.frame` ファイル番号 N は `imgs/` の画像 N+1 に対応します。
+例: `00000.frame` ↔ `imgs/00001.jpg`
+本パイプラインはこの対応関係を正確に維持します。
 
 ---
 

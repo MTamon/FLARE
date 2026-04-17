@@ -218,5 +218,6 @@ lightning_logs/**/*
 !analysis.sh
 !docker-entry.sh
 !install/*.sh
+!scripts/*.sh
 
 wandb/
