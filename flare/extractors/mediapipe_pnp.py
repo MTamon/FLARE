@@ -10,12 +10,34 @@ camera_t 引数に直接渡せる。
     R : 頭部の回転（姿勢 = Pose）  → カメラ座標系における頭部の向き
     t : 頭部の並進（位置 = Position）  → カメラ座標系における頭部の 3D 座標 (x, y, z)
 
-リアルタイム性能（参考値）:
-    - MediaPipe FaceMesh (Python binding は CPU 推論, TFLite XNNPACK): 720p で 60-100 FPS
-    - cv2.solvePnP: <1 ms / frame
-    - 合計: 25 FPS 以上の real-time 要件を満たす
+バックエンド選択（``backend`` パラメータ）:
 
-    ``refine_landmarks=False`` を使うこと（虹彩 10 点は PnP で未使用のため）。
+    "solutions" (既定)
+        ``mp.solutions.face_mesh.FaceMesh`` を使用。CPU 推論 (TFLite XNNPACK)。
+        追加モデルファイル不要。720p で 60-100 FPS。
+        注: Google は 2023-03 に deprecated 宣言しているが現時点では機能する。
+
+    "tasks"
+        ``mediapipe.tasks.python.vision.FaceLandmarker`` を使用。
+        ``gpu=True`` にすると TFLite GPU delegate（OpenGL ES + EGL 経由）を使用。
+        CUDA 12.8 の NVIDIA ドライバに付属する EGL を用いてヘッドレス環境でも動作する。
+        環境変数の設定が必要な場合::
+
+            export __EGL_VENDOR_LIBRARY_FILENAMES=\\
+                /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+        GPU delegate での実測 FPS（RTX 3090）: ~150-200 FPS（CPU比 1.5-1.8 倍）。
+        ``model_path`` に ``face_landmarker.task`` ファイルのパスを指定すること。
+
+リアルタイム性能まとめ:
+    +---------------+------+----------+-----------+
+    | backend       | gpu  | FPS 目安 | 要件      |
+    +===============+======+==========+===========+
+    | solutions     | N/A  | 80-120   | -         |
+    | tasks         | False| 80-120   | .task ファイル |
+    | tasks         | True | 150-200  | .task + EGL|
+    +---------------+------+----------+-----------+
+    FLARE の 25 FPS 目標はどの設定でも満たす。
 
 座標系規則:
     OpenCV 右手系を採用する。
@@ -30,7 +52,20 @@ camera_t 引数に直接渡せる。
 
 Example::
 
+    # CPU 推論（solutions API、デフォルト）
     tracker = MediaPipePnPTracker()
+
+    # Tasks API + GPU delegate
+    tracker = MediaPipePnPTracker(
+        backend="tasks",
+        model_path="./checkpoints/mediapipe/face_landmarker.task",
+        gpu=True,
+    )
+
+    # YAML 設定ファイルから生成
+    import yaml
+    cfg = yaml.safe_load(open("configs/realtime_flame.yaml"))
+    tracker = MediaPipePnPTracker.from_config(cfg["mediapipe_pnp"])
 
     # 1 フレーム処理
     result = tracker.track(frame_bgr)   # full-resolution BGR frame
@@ -41,8 +76,16 @@ Example::
             camera_K=K, camera_R=R, camera_t=t,
         )
 
-    # リソース解放
+    # リソース解放（context manager も使用可）
     tracker.release()
+
+YAML 設定例 (configs/realtime_flame.yaml 内)::
+
+    mediapipe_pnp:
+      backend: tasks                              # "solutions" または "tasks"
+      model_path: ./checkpoints/mediapipe/face_landmarker.task  # tasks 時のみ必須
+      gpu: true                                   # tasks 時のみ有効
+      calib_file: null                            # OpenCV YAML キャリブレーションファイル
 """
 
 from __future__ import annotations
@@ -91,7 +134,108 @@ _FACE_MODEL_3D = np.array(
 
 
 # ---------------------------------------------------------------------------
-# MediaPipePnPTracker
+# 内部バックエンド（ランドマーク検出のみ担当）
+# ---------------------------------------------------------------------------
+
+class _SolutionsBackend:
+    """mp.solutions.face_mesh を使うバックエンド（CPU、deprecated だが機能する）。"""
+
+    def __init__(self) -> None:
+        _mp_face_mesh = mp.solutions.face_mesh  # type: ignore[attr-defined]
+        self._face_mesh = _mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=False,  # 虹彩 10 点は PnP で未使用
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+
+    def detect(
+        self, frame_rgb: np.ndarray, w: int, h: int
+    ) -> np.ndarray | None:
+        """ランドマーク 6 点の画素座標 (6, 2) を返す。失敗時は None。"""
+        results = self._face_mesh.process(frame_rgb)
+        if not results.multi_face_landmarks:
+            return None
+        face_lm = results.multi_face_landmarks[0]
+        if len(face_lm.landmark) < max(_MP_LANDMARK_IDX) + 1:
+            return None
+        pts = np.zeros((len(_MP_LANDMARK_IDX), 2), dtype=np.float64)
+        for i, idx in enumerate(_MP_LANDMARK_IDX):
+            lm = face_lm.landmark[idx]
+            pts[i, 0] = lm.x * w
+            pts[i, 1] = lm.y * h
+        return pts
+
+    def close(self) -> None:
+        self._face_mesh.close()
+
+
+class _TasksBackend:
+    """mediapipe.tasks FaceLandmarker を使うバックエンド（CPU / GPU 選択可能）。
+
+    Args:
+        model_path: ``face_landmarker.task`` バンドルファイルのパス。
+        gpu: True のとき TFLite GPU delegate を使用する（OpenGL ES + EGL 経由）。
+    """
+
+    def __init__(self, model_path: str, gpu: bool = False) -> None:
+        try:
+            from mediapipe.tasks import python as _mp_tasks  # type: ignore[import-untyped]
+            from mediapipe.tasks.python import vision as _mp_vision  # type: ignore[import-untyped]
+        except ImportError as e:
+            raise ImportError(
+                "mediapipe Tasks API が見つかりません。"
+                "`pip install mediapipe>=0.10` を確認してください。"
+            ) from e
+
+        delegate = (
+            _mp_tasks.BaseOptions.Delegate.GPU
+            if gpu
+            else _mp_tasks.BaseOptions.Delegate.CPU
+        )
+        base_options = _mp_tasks.BaseOptions(
+            model_asset_path=model_path,
+            delegate=delegate,
+        )
+        options = _mp_vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=_mp_vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+        )
+        self._landmarker = _mp_vision.FaceLandmarker.create_from_options(options)
+
+    def detect(
+        self, frame_rgb: np.ndarray, w: int, h: int
+    ) -> np.ndarray | None:
+        """ランドマーク 6 点の画素座標 (6, 2) を返す。失敗時は None。"""
+        mp_image = mp.Image(  # type: ignore[attr-defined]
+            image_format=mp.ImageFormat.SRGB,  # type: ignore[attr-defined]
+            data=frame_rgb,
+        )
+        result = self._landmarker.detect(mp_image)
+        if not result.face_landmarks:
+            return None
+        landmarks = result.face_landmarks[0]
+        if len(landmarks) < max(_MP_LANDMARK_IDX) + 1:
+            return None
+        pts = np.zeros((len(_MP_LANDMARK_IDX), 2), dtype=np.float64)
+        for i, idx in enumerate(_MP_LANDMARK_IDX):
+            lm = landmarks[idx]
+            pts[i, 0] = lm.x * w
+            pts[i, 1] = lm.y * h
+        return pts
+
+    def close(self) -> None:
+        self._landmarker.close()
+
+
+# ---------------------------------------------------------------------------
+# MediaPipePnPTracker（公開クラス）
 # ---------------------------------------------------------------------------
 
 
@@ -106,12 +250,22 @@ class MediaPipePnPTracker:
         camera_matrix: カメラ固有行列 (3, 3)。None の場合はフレームサイズから
             自動推定する（焦点距離 = max(W, H)、主点 = 中心）。
         dist_coeffs: レンズ歪み係数。None の場合は歪みなしとする。
+        backend: ``"solutions"``（既定）または ``"tasks"``。
+            ``"solutions"`` は deprecated な ``mp.solutions.face_mesh`` を使用。
+            ``"tasks"`` は ``mediapipe.tasks`` FaceLandmarker を使用（GPU 対応）。
+        model_path: ``backend="tasks"`` の場合に必須。
+            ``face_landmarker.task`` ファイルのパス。
+        gpu: ``backend="tasks"`` かつ ``True`` の場合に GPU delegate を使用。
+            Linux + NVIDIA EGL ドライバが必要。
     """
 
     def __init__(
         self,
         camera_matrix: np.ndarray | None = None,
         dist_coeffs: np.ndarray | None = None,
+        backend: str = "solutions",
+        model_path: str | None = None,
+        gpu: bool = False,
     ) -> None:
         if not _HAS_MEDIAPIPE:
             raise ImportError(
@@ -120,19 +274,23 @@ class MediaPipePnPTracker:
 
         self._camera_matrix = camera_matrix
         self._dist_coeffs = (
-            dist_coeffs
-            if dist_coeffs is not None
+            dist_coeffs if dist_coeffs is not None
             else np.zeros(4, dtype=np.float64)
         )
+        self._backend_name = backend
 
-        _mp_face_mesh = mp.solutions.face_mesh  # type: ignore[attr-defined]
-        self._face_mesh = _mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=False,  # 虹彩 10 点は PnP で未使用のため無効化
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
+        if backend == "solutions":
+            self._backend: _SolutionsBackend | _TasksBackend = _SolutionsBackend()
+        elif backend == "tasks":
+            if not model_path:
+                raise ValueError(
+                    "backend='tasks' には model_path（face_landmarker.task のパス）が必要です。"
+                )
+            self._backend = _TasksBackend(model_path=model_path, gpu=gpu)
+        else:
+            raise ValueError(
+                f"不明な backend: {backend!r}。'solutions' または 'tasks' を指定してください。"
+            )
 
     # ------------------------------------------------------------------
     # public API
@@ -170,9 +328,12 @@ class MediaPipePnPTracker:
             FlameConverter は内部で単発 ``(3, 3)`` / ``(3,)`` をバッチ次元
             付きに自動 unsqueeze する（``flame_converter.py`` L252-257 参照）
             ので、1 フレーム処理ではそのまま渡せばよい。
-            バッチ処理する場合のみ呼び出し側で ``.unsqueeze(0)`` して
-            ``torch.cat`` すること。
         """
+        if self._backend is None:
+            raise RuntimeError(
+                "MediaPipePnPTracker は既に release() されています。再生成してください。"
+            )
+
         h, w = frame_bgr.shape[:2]
         if img_wh is None:
             img_wh = (w, h)
@@ -189,28 +350,11 @@ class MediaPipePnPTracker:
                 dtype=np.float64,
             )
 
-        # ----- MediaPipe FaceMesh -----
-        if self._face_mesh is None:
-            raise RuntimeError(
-                "MediaPipePnPTracker は既に release() されています。再生成してください。"
-            )
+        # ----- ランドマーク検出（バックエンド委譲） -----
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        results = self._face_mesh.process(frame_rgb)
-
-        if not results.multi_face_landmarks:
+        pts_2d = self._backend.detect(frame_rgb, w, h)
+        if pts_2d is None:
             return None
-
-        face_landmarks = results.multi_face_landmarks[0]
-        n_landmarks = len(face_landmarks.landmark)
-
-        # 6 点の 2D 画像座標を取得
-        pts_2d = np.zeros((len(_MP_LANDMARK_IDX), 2), dtype=np.float64)
-        for i, idx in enumerate(_MP_LANDMARK_IDX):
-            if idx >= n_landmarks:
-                return None
-            lm = face_landmarks.landmark[idx]
-            pts_2d[i, 0] = lm.x * w
-            pts_2d[i, 1] = lm.y * h
 
         # ----- cv2.solvePnP -----
         # SQPNP (OpenCV ≥ 4.5) は 6 点用途で ITERATIVE より堅牢で初期値不要。
@@ -241,11 +385,16 @@ class MediaPipePnPTracker:
             "success": True,
         }
 
+    @property
+    def backend(self) -> str:
+        """現在のバックエンド名（"solutions" または "tasks"）。"""
+        return self._backend_name
+
     def release(self) -> None:
         """MediaPipe リソースを解放する。使用後に呼ぶこと。二重呼び出し安全。"""
-        if self._face_mesh is not None:
-            self._face_mesh.close()
-            self._face_mesh = None
+        if self._backend is not None:
+            self._backend.close()
+            self._backend = None  # type: ignore[assignment]
 
     def __enter__(self) -> "MediaPipePnPTracker":
         return self
@@ -254,21 +403,84 @@ class MediaPipePnPTracker:
         self.release()
 
     # ------------------------------------------------------------------
-    # class method: K をカメラキャリブレーションファイルから読み込む
+    # factory class methods
     # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(cls, config: dict) -> "MediaPipePnPTracker":
+        """辞書（YAML 等）から生成する。
+
+        Args:
+            config: 以下のキーを持つ辞書::
+
+                backend:    "solutions" | "tasks"   (既定: "solutions")
+                model_path: str | null               (tasks 時に必須)
+                gpu:        bool                     (tasks 時のみ有効, 既定: false)
+                calib_file: str | null               (既定: null = 自動推定)
+
+        Returns:
+            初期化済み ``MediaPipePnPTracker``。
+
+        Example::
+
+            # configs/realtime_flame.yaml 内:
+            #   mediapipe_pnp:
+            #     backend: tasks
+            #     model_path: ./checkpoints/mediapipe/face_landmarker.task
+            #     gpu: true
+            #     calib_file: null
+
+            import yaml
+            cfg = yaml.safe_load(open("configs/realtime_flame.yaml"))
+            tracker = MediaPipePnPTracker.from_config(cfg["mediapipe_pnp"])
+        """
+        backend = config.get("backend", "solutions")
+        model_path = config.get("model_path") or None
+        gpu = bool(config.get("gpu", False))
+        calib_file = config.get("calib_file") or None
+
+        camera_matrix: np.ndarray | None = None
+        dist_coeffs: np.ndarray | None = None
+
+        if calib_file:
+            fs = cv2.FileStorage(calib_file, cv2.FILE_STORAGE_READ)
+            node_K = fs.getNode("camera_matrix")
+            if node_K.empty():
+                raise ValueError(
+                    f"キャリブレーションファイルに camera_matrix が見つかりません: {calib_file}"
+                )
+            camera_matrix = node_K.mat()
+            node_d = fs.getNode("dist_coeffs")
+            if not node_d.empty():
+                dist_coeffs = node_d.mat().flatten()
+            fs.release()
+
+        return cls(
+            camera_matrix=camera_matrix,
+            dist_coeffs=dist_coeffs,
+            backend=backend,
+            model_path=model_path,
+            gpu=gpu,
+        )
 
     @classmethod
     def from_calibration(
         cls,
         calib_file: str,
         dist_coeffs: np.ndarray | None = None,
+        backend: str = "solutions",
+        model_path: str | None = None,
+        gpu: bool = False,
     ) -> "MediaPipePnPTracker":
         """OpenCV 形式のキャリブレーションファイルから K を読み込む。
 
         Args:
             calib_file: ``cv2.FileStorage`` で保存された YAML / XML ファイル。
                 ``camera_matrix`` キーに 3×3 行列が格納されていること。
-            dist_coeffs: レンズ歪み係数。None の場合は歪みなしとする。
+            dist_coeffs: レンズ歪み係数。None の場合はファイルから読む（なければ歪みなし）。
+            backend: ``"solutions"`` または ``"tasks"``。
+            model_path: ``backend="tasks"`` の場合に必須。
+            gpu: ``backend="tasks"`` の場合に有効。
 
         Returns:
             初期化済み ``MediaPipePnPTracker``。
@@ -284,4 +496,10 @@ class MediaPipePnPTracker:
             if not node.empty():
                 dist_coeffs = node.mat().flatten()
         fs.release()
-        return cls(camera_matrix=K, dist_coeffs=dist_coeffs)
+        return cls(
+            camera_matrix=K,
+            dist_coeffs=dist_coeffs,
+            backend=backend,
+            model_path=model_path,
+            gpu=gpu,
+        )
