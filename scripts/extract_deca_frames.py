@@ -86,6 +86,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="最大処理フレーム数 (デバッグ用)",
     )
+    p.add_argument(
+        "--target_fps",
+        type=float,
+        default=None,
+        help=(
+            "出力フレームレート (fps)。元動画より低い値を指定するとフレームを間引く。"
+            "省略時は全フレームを処理。FlashAvatar 論文設定に合わせるなら 25 を推奨。"
+        ),
+    )
     return p.parse_args()
 
 
@@ -126,10 +135,11 @@ def main() -> None:
 
     logger.add(str(out_dir / "extract_deca.log"), rotation="10 MB")
     logger.info("=== extract_deca_frames.py ===")
-    logger.info("video   : {}", args.video)
-    logger.info("out_dir : {}", out_dir)
-    logger.info("device  : {}", args.device)
-    logger.info("img_size: {}", args.img_size)
+    logger.info("video      : {}", args.video)
+    logger.info("out_dir    : {}", out_dir)
+    logger.info("device     : {}", args.device)
+    logger.info("img_size   : {}", args.img_size)
+    logger.info("target_fps : {}", args.target_fps if args.target_fps else "全フレーム (間引きなし)")
 
     # モデルのロード
     extractor, face_detector = _load_extractor_and_detector(
@@ -143,21 +153,50 @@ def main() -> None:
         sys.exit(1)
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    logger.info("動画フレーム数: {}, FPS: {:.1f}", total_frames, fps)
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    if source_fps <= 0:
+        source_fps = 30.0
+    logger.info("動画フレーム数: {}, 元 FPS: {:.1f}", total_frames, source_fps)
+
+    # FPS サブサンプリング設定
+    # floor(raw_idx * target_fps / source_fps) が前フレームから増加したときだけ採用する。
+    target_fps = args.target_fps
+    if target_fps is not None and target_fps >= source_fps:
+        logger.warning(
+            "target_fps ({:.1f}) が元 FPS ({:.1f}) 以上のため間引きをスキップします",
+            target_fps, source_fps,
+        )
+        target_fps = None
 
     # 前フレームのキャリーフォワード用
     last_good_codedict: dict[str, torch.Tensor] | None = None
     skipped_frames: list[int] = []
     carry_forward_frames: list[int] = []
 
-    frame_idx = 0  # 0-indexed (deca_outputs / .frame のインデックス)
+    raw_idx = 0       # 元動画のフレーム通し番号 (読み込み順)
+    frame_idx = 0     # 出力インデックス (deca_outputs / .frame のインデックス, 0-indexed)
     processed = 0
     max_frames = args.max_frames or total_frames
 
+    import math
+
     while True:
         ret, frame_bgr = cap.read()
-        if not ret or frame_idx >= max_frames:
+        if not ret:
+            break
+
+        # FPS サブサンプリング: このフレームを採用するか判定
+        if target_fps is not None:
+            keep = math.floor(raw_idx * target_fps / source_fps) > math.floor(
+                (raw_idx - 1) * target_fps / source_fps
+            )
+            raw_idx += 1
+            if not keep:
+                continue
+        else:
+            raw_idx += 1
+
+        if frame_idx >= max_frames:
             break
 
         # ---- imgs/ への保存 (1-indexed) ----
@@ -237,6 +276,9 @@ def main() -> None:
     log = {
         "video": str(args.video),
         "total_extracted": frame_idx,
+        "source_fps": source_fps,
+        "target_fps": args.target_fps,
+        "total_raw_frames_scanned": raw_idx,
         "skipped_frames": skipped_frames,
         "carry_forward_frames": carry_forward_frames,
         "img_size": args.img_size,
