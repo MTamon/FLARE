@@ -1,0 +1,8 @@
+[submodule "third_party/DECA"]
+	path = third_party/DECA
+	url = https://github.com/MTamon/DECA.git
+	branch = cuda128
+[submodule "third_party/FlashAvatar"]
+	path = third_party/FlashAvatar
+	url = https://github.com/MTamon/FlashAvatar.git
+	branch = release/cuda128-fixed

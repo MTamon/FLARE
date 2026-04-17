@@ -25,6 +25,7 @@ extractor:
     - exp
     - pose
     - cam
+  repo_dir: ./third_party/DECA  # MTamon/DECA@cuda128 サブモジュール
 
 device_map:
   extractor: cuda:0

@@ -23,12 +23,14 @@ extractor:
     - exp
     - pose
     - cam
+  repo_dir: ./third_party/DECA  # MTamon/DECA@cuda128 サブモジュール
 
 renderer:
   type: flash_avatar
   model_path: ./checkpoints/flashavatar/
   source_image: null  # FlashAvatar はソース画像不要
   output_size: [512, 512]
+  repo_dir: ./third_party/FlashAvatar  # MTamon/FlashAvatar@release/cuda128-fixed サブモジュール
 
 lhg_model:
   type: learning2listen

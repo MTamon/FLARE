@@ -57,6 +57,9 @@ class ExtractorConfig(BaseModel):
         model_path: 事前学習済みモデルファイルのパス。
         input_size: 入力画像のサイズ（正方形の一辺）。
         return_keys: extract()が返すDictのキーリスト。
+        repo_dir: 外部リポジトリのルートディレクトリパス。sys.path に追加してインポートを
+            可能にする。DECA の場合は ``./third_party/DECA`` 等を指定。
+            None の場合はインポート済みと仮定する。
     """
 
     type: str = Field(default="deca", description="Extractor種別")
@@ -65,6 +68,10 @@ class ExtractorConfig(BaseModel):
     return_keys: list[str] = Field(
         default_factory=lambda: ["shape", "exp", "pose", "detail"],
         description="出力Dictのキーリスト",
+    )
+    repo_dir: Optional[str] = Field(
+        default=None,
+        description="外部リポジトリのルートディレクトリパス（sys.path追加用）",
     )
 
 
@@ -76,6 +83,9 @@ class RendererConfig(BaseModel):
         model_path: 事前学習済みモデルのディレクトリまたはファイルパス。
         source_image: setup()時に登録するソース肖像画像のパス。
         output_size: 出力画像の[幅, 高さ]。
+        repo_dir: 外部リポジトリのルートディレクトリパス。sys.path に追加してインポートを
+            可能にする。FlashAvatar の場合は ``./third_party/FlashAvatar`` 等を指定。
+            None の場合はインポート済みと仮定する。
     """
 
     type: str = Field(default="flash_avatar", description="Renderer種別")
@@ -87,6 +97,10 @@ class RendererConfig(BaseModel):
     )
     output_size: list[int] = Field(
         default_factory=lambda: [512, 512], description="出力画像サイズ [幅, 高さ]"
+    )
+    repo_dir: Optional[str] = Field(
+        default=None,
+        description="外部リポジトリのルートディレクトリパス（sys.path追加用）",
     )
 
 

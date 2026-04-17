@@ -214,8 +214,9 @@ lightning_logs/**/*
 *.wav
 *.mp3
 
+*.sh
 !analysis.sh
 !docker-entry.sh
-*.sh
+!install/*.sh
 
 wandb/

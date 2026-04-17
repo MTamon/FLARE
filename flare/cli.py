@@ -42,7 +42,56 @@ from flare.pipeline.lhg_batch import LHGBatchPipeline
 from flare.utils.logging import setup_logger
 
 
-def _build_extractor(extractor_type: str, model_path: str, device: str):
+def _build_renderer(
+    renderer_type: str,
+    model_path: str,
+    output_size: list[int],
+    device: str,
+    repo_dir: Optional[str] = None,
+):
+    """Renderer 種別からインスタンスを構築するヘルパー。
+
+    Args:
+        renderer_type: ``"flash_avatar"``, ``"pirender"``, ``"headgas"`` のいずれか。
+        model_path: モデルディレクトリまたはファイルパス。
+        output_size: 出力画像サイズ ``[幅, 高さ]``。
+        device: 計算デバイス文字列。
+        repo_dir: 外部リポジトリのルートディレクトリパス。FlashAvatar の場合は
+            ``./third_party/FlashAvatar`` 等を指定。None の場合はインポート済みと仮定。
+
+    Returns:
+        構築済み ``BaseRenderer`` サブクラスインスタンス。
+
+    Raises:
+        ValueError: 未知の renderer_type の場合。
+    """
+    rt = renderer_type.lower()
+    if rt in ("flash_avatar", "flashavatar"):
+        from flare.renderers.flashavatar import FlashAvatarRenderer
+
+        return FlashAvatarRenderer(
+            model_path=model_path,
+            device=device,
+            output_size=output_size,
+            flashavatar_dir=repo_dir,
+        )
+    if rt == "pirender":
+        from flare.renderers.pirender import PIRenderRenderer
+
+        return PIRenderRenderer(model_path=model_path, device=device)
+    if rt == "headgas":
+        from flare.renderers.headgas import HeadGaSRenderer
+
+        return HeadGaSRenderer(model_path=model_path, device=device)
+    raise ValueError(f"Unknown renderer type: {renderer_type!r}")
+
+
+def _build_extractor(
+    extractor_type: str,
+    model_path: str,
+    device: str,
+    repo_dir: Optional[str] = None,
+):
     """Extractor 種別からインスタンスを構築するヘルパー。
 
     重いモデルファイルの読み込みを伴うため、``dry-run`` 時には呼び出さない。
@@ -51,6 +100,8 @@ def _build_extractor(extractor_type: str, model_path: str, device: str):
         extractor_type: ``"deca"``, ``"deep3d"``, ``"smirk"``, ``"3ddfa"`` のいずれか。
         model_path: モデルチェックポイントパス。
         device: 計算デバイス文字列。
+        repo_dir: 外部リポジトリのルートディレクトリパス。DECA の場合は
+            ``./third_party/DECA`` 等を指定。None の場合はインポート済みと仮定。
 
     Returns:
         構築済み ``BaseExtractor`` サブクラスインスタンス。
@@ -62,7 +113,7 @@ def _build_extractor(extractor_type: str, model_path: str, device: str):
     if et == "deca":
         from flare.extractors.deca import DECAExtractor
 
-        return DECAExtractor(model_path=model_path, device=device)
+        return DECAExtractor(model_path=model_path, device=device, deca_dir=repo_dir)
     if et == "deep3d":
         from flare.extractors.deep3d import Deep3DFaceReconExtractor
 
@@ -328,10 +379,19 @@ def render(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info(
-        "Render pipeline ready. "
-        "Renderer implementations will be available in Phase 2/3."
+    renderer = _build_renderer(
+        renderer_type=renderer,
+        model_path=avatar_model,
+        output_size=[width, height],
+        device=config.device_map.renderer,
+        repo_dir=config.renderer.repo_dir,
     )
+    renderer.setup()
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Renderer initialized: type={}, model={}", renderer, avatar_model)
     logger.info("=== Render complete ===")
 
 
@@ -481,6 +541,7 @@ def lhg_extract(
         extractor_type=config.extractor.type,
         model_path=config.extractor.model_path,
         device=config.device_map.extractor,
+        repo_dir=config.extractor.repo_dir,
     )
 
     pipeline = LHGBatchPipeline(config=config, extractor=extractor)
