@@ -11,9 +11,11 @@ camera_t 引数に直接渡せる。
     t : 頭部の並進（位置 = Position）  → カメラ座標系における頭部の 3D 座標 (x, y, z)
 
 リアルタイム性能（参考値）:
-    - MediaPipe FaceMesh（GPU）: 200+ FPS
+    - MediaPipe FaceMesh (Python binding は CPU 推論, TFLite XNNPACK): 720p で 60-100 FPS
     - cv2.solvePnP: <1 ms / frame
     - 合計: 25 FPS 以上の real-time 要件を満たす
+
+    ``refine_landmarks=False`` を使うこと（虹彩 10 点は PnP で未使用のため）。
 
 座標系規則:
     OpenCV 右手系を採用する。
@@ -127,7 +129,7 @@ class MediaPipePnPTracker:
         self._face_mesh = _mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            refine_landmarks=True,
+            refine_landmarks=False,  # 虹彩 10 点は PnP で未使用のため無効化
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -165,8 +167,11 @@ class MediaPipePnPTracker:
         Note:
             返り値の ``K``, ``R``, ``t`` は FlameConverter.convert() の
             ``camera_K``, ``camera_R``, ``camera_t`` 引数にそのまま渡せる。
-            FlameConverter は (B, 3, 3) を期待するため、必要に応じて
-            ``.unsqueeze(0)`` すること。
+            FlameConverter は内部で単発 ``(3, 3)`` / ``(3,)`` をバッチ次元
+            付きに自動 unsqueeze する（``flame_converter.py`` L252-257 参照）
+            ので、1 フレーム処理ではそのまま渡せばよい。
+            バッチ処理する場合のみ呼び出し側で ``.unsqueeze(0)`` して
+            ``torch.cat`` すること。
         """
         h, w = frame_bgr.shape[:2]
         if img_wh is None:
@@ -185,6 +190,10 @@ class MediaPipePnPTracker:
             )
 
         # ----- MediaPipe FaceMesh -----
+        if self._face_mesh is None:
+            raise RuntimeError(
+                "MediaPipePnPTracker は既に release() されています。再生成してください。"
+            )
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self._face_mesh.process(frame_rgb)
 
@@ -204,12 +213,14 @@ class MediaPipePnPTracker:
             pts_2d[i, 1] = lm.y * h
 
         # ----- cv2.solvePnP -----
+        # SQPNP (OpenCV ≥ 4.5) は 6 点用途で ITERATIVE より堅牢で初期値不要。
+        pnp_flag = getattr(cv2, "SOLVEPNP_SQPNP", cv2.SOLVEPNP_ITERATIVE)
         success, rvec, tvec = cv2.solvePnP(
             _FACE_MODEL_3D,
             pts_2d,
             K_np,
             self._dist_coeffs,
-            flags=cv2.SOLVEPNP_ITERATIVE,
+            flags=pnp_flag,
         )
         if not success:
             return None
@@ -231,8 +242,10 @@ class MediaPipePnPTracker:
         }
 
     def release(self) -> None:
-        """MediaPipe リソースを解放する。使用後に呼ぶこと。"""
-        self._face_mesh.close()
+        """MediaPipe リソースを解放する。使用後に呼ぶこと。二重呼び出し安全。"""
+        if self._face_mesh is not None:
+            self._face_mesh.close()
+            self._face_mesh = None
 
     def __enter__(self) -> "MediaPipePnPTracker":
         return self
