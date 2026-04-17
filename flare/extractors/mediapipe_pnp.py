@@ -246,6 +246,12 @@ class MediaPipePnPTracker:
     BGR フレームであるため）。DECA / SMIRK と並列に呼び出し、FlameConverter に
     camera_K / camera_R / camera_t を供給する補助トラッカとして使用する。
 
+    Thread safety:
+        Thread-safe ではない。内部の MediaPipe FaceMesh / FaceLandmarker は
+        インスタンスごとにシングルスレッド前提であり、複数スレッドから同じ
+        ``MediaPipePnPTracker`` に対して ``track()`` を並行呼び出ししてはならない。
+        並列処理が必要な場合はスレッドごとに個別のインスタンスを生成すること。
+
     Args:
         camera_matrix: カメラ固有行列 (3, 3)。None の場合はフレームサイズから
             自動推定する（焦点距離 = max(W, H)、主点 = 中心）。
@@ -367,6 +373,10 @@ class MediaPipePnPTracker:
             flags=pnp_flag,
         )
         if not success:
+            return None
+
+        # SQPNP は degenerate 入力で success=True のまま NaN を返すことがある。
+        if not (np.all(np.isfinite(rvec)) and np.all(np.isfinite(tvec))):
             return None
 
         R_np, _ = cv2.Rodrigues(rvec)
