@@ -99,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         default=512,
         help="出力動画の 1 ペイン幅 (px)。横幅は 2 倍になる",
     )
+    p.add_argument(
+        "--no_eye_supplement",
+        action="store_true",
+        help="DECA 使用時に MediaPipe による eyes_pose / eyelids 補完を無効化",
+    )
     return p.parse_args()
 
 
@@ -179,7 +184,8 @@ def main() -> None:
             )
             sys.exit(1)
         extractor = _load_deca(args.deca_model, device)
-        adapter = DECAToFlameAdapter()
+        # DECA は eyes_pose / eyelids を出力しないため、MediaPipe で補完する
+        adapter = DECAToFlameAdapter(use_mediapipe_supplement=not args.no_eye_supplement)
 
     if not Path(args.checkpoint_dir).exists():
         logger.error(
@@ -236,6 +242,11 @@ def main() -> None:
 
             with torch.no_grad():
                 params = extractor.extract(tensor)
+                if args.extractor == "deca" and not args.no_eye_supplement:
+                    eyes_pose, eyelids = face_detector.detect_eye_pose(frame_bgr, bbox)
+                    params = dict(params)
+                    params["eyes_pose"] = eyes_pose.to(device)
+                    params["eyelids"] = eyelids.to(device)
                 flash_params = adapter.convert(params)
                 rendered = renderer.render(flash_params)
 
