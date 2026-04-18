@@ -369,14 +369,12 @@ def main() -> None:
                     if renderer is not None:
                         t0 = time.perf_counter()
                         with torch.no_grad():
-                            render_out = renderer.render(flash_params)
-                        rendered = render_out.get("image", render_out.get("rendered_img"))
-                        if isinstance(rendered, torch.Tensor):
-                            rendered = (
-                                rendered.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0
-                            ).clip(0, 255).astype(np.uint8)
-                            rendered = cv2.cvtColor(rendered, cv2.COLOR_RGB2BGR)
-                        last_render = cv2.resize(rendered, (ds, ds))
+                            rendered = renderer.render(flash_params)
+                        rendered_rgb = (
+                            rendered[0].permute(1, 2, 0).clamp(0.0, 1.0).cpu().numpy() * 255.0
+                        ).astype(np.uint8)
+                        rendered_bgr = cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2BGR)
+                        last_render = cv2.resize(rendered_bgr, (ds, ds))
                         timings["render"] = (time.perf_counter() - t0) * 1000.0
 
                     agg_face += 1
@@ -392,10 +390,11 @@ def main() -> None:
             left_pane = cv2.resize(frame, (int(orig_w * scale), ds))
 
             # 中ペイン: bbox を描画した入力フレーム
+            # FaceDetector.detect() は (x1, y1, x2, y2) を返す
             mid_pane_src = frame.copy()
             if face_ok and bbox is not None:
-                x, y, w, h = bbox
-                cv2.rectangle(mid_pane_src, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                x1, y1, x2, y2 = bbox
+                cv2.rectangle(mid_pane_src, (x1, y1), (x2, y2), (0, 255, 0), 2)
             mid_pane = cv2.resize(mid_pane_src, (ds, ds))
 
             right_pane = last_render if last_render is not None else np.zeros((ds, ds, 3), np.uint8)

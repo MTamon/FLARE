@@ -237,14 +237,12 @@ def main() -> None:
             with torch.no_grad():
                 params = extractor.extract(tensor)
                 flash_params = adapter.convert(params)
-                render_out = renderer.render(flash_params)
+                rendered = renderer.render(flash_params)
 
-            rendered_bgr = render_out["image"]
-            if isinstance(rendered_bgr, torch.Tensor):
-                rendered_bgr = (
-                    rendered_bgr.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0
-                ).clip(0, 255).astype(np.uint8)
-                rendered_bgr = cv2.cvtColor(rendered_bgr, cv2.COLOR_RGB2BGR)
+            rendered_rgb = (
+                rendered[0].permute(1, 2, 0).clamp(0.0, 1.0).cpu().numpy() * 255.0
+            ).astype(np.uint8)
+            rendered_bgr = cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2BGR)
 
             last_render = cv2.resize(rendered_bgr, (pw, pw))
             n_ok += 1
