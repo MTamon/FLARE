@@ -1,0 +1,88 @@
+# FlashAvatar 学習パイプライン設定 (DECA / SMIRK 両対応)
+#
+# 使用例:
+#   uv run python scripts/train_flashavatar.py \
+#       --id_name person01 \
+#       --video data/raw/person01.mp4 \
+#       --config configs/train_flashavatar.yaml
+#
+# 互換: 旧 scripts/train_flashavatar.sh (DECA 専用) と同じ 5 ステージ構成。
+#   Step 1: 動画 → フレーム抽出 + per-frame 特徴抽出 (DECA or SMIRK)
+#   Step 2: MediaPipe マスク生成 (parsing/, alpha/)
+#   Step 3: per-frame .pt → FlashAvatar .frame 変換 (FlameConverter)
+#   Step 4: FlashAvatar train.py で 3DGS を学習
+#   Step 5: FlashAvatar test.py で検証動画を生成
+#
+# 推奨ハイパーパラメータ: RTX 3090 で iterations=30000 が約 30 分の目安。
+#   - VRAM 不足 (< 12 GB): img_size=256 / iterations=15000 を試す
+#   - 高品質仕上げ:        iterations=60000 (約 1 時間)
+
+pipeline:
+  # 特徴抽出器の選択。
+  #   "deca":  DECA (FLAME, 安定実績、対称表情に強い)
+  #   "smirk": SMIRK (cuda128 fork、非対称表情に強い、推論速度同等)
+  # SMIRK ルートは pose レイアウト [global_rot(3), jaw(3)] が DECA と整合する
+  # ため Step 3 の flame_converter で同じ FLAME パラメータ系列として扱える。
+  extractor: deca
+
+  # CUDA デバイス
+  device: cuda:0
+
+video:
+  # 入力動画を学習用に正規化する FPS。null なら元動画の FPS を維持。
+  # FlashAvatar は 25fps 前提で学習されることが多いため既定値は 25。
+  target_fps: 25
+
+  # 抽出フレーム解像度 (px)。両端 (W, H) を img_size にリサイズして保存。
+  # FlashAvatar の image_res 引数にもこの値が渡される。
+  img_size: 512
+
+  # アスペクト比を保ったまま中央クロップ → リサイズするか。
+  #   true:  顔が中心付近にある動画向け (推奨)。アスペクト比歪みを避けつつ
+  #          短辺基準でクロップ。
+  #   false: アスペクト比無視のリサイズ (歪む可能性あり、互換用)。
+  center_crop: true
+
+  # 最大処理フレーム数。null なら全フレーム。
+  # WARNING: FlashAvatar は最低 600 フレーム (target_fps=25 なら 24 秒) を推奨。
+  max_frames: null
+
+extractor:
+  # extractor: deca のとき使用
+  deca:
+    model_path: ./checkpoints/deca/deca_model.tar
+    repo_dir: ./third_party/DECA
+    input_size: 224
+
+  # extractor: smirk のとき使用
+  smirk:
+    model_path: ./checkpoints/smirk/SMIRK_em1.pt
+    repo_dir: ./third_party/smirk
+    input_size: 224
+
+flashavatar:
+  # FlashAvatar リポジトリパス (train.py / test.py / utils/flame_converter.py を含む)
+  repo_dir: ./third_party/FlashAvatar
+
+  # 学習イテレーション数。
+  # RTX 3090 + img_size=512 で 30000 iter 約 30 分。
+  iterations: 30000
+
+  # 学習データ (imgs/, parsing/, alpha/, deca_outputs/) 出力ルート
+  data_root: ./data/flashavatar_training
+
+  # 既存チェックポイントを自動検出して --start_checkpoint で学習を再開する。
+  resume_if_exists: true
+
+stages:
+  # 各ステージの実行制御。再実行時の時間短縮用に false にできる。
+  extract: true   # Step 1: フレーム抽出 + per-frame 特徴抽出
+  masks: true     # Step 2: MediaPipe マスク生成
+  convert: true   # Step 3: per-frame .pt → .frame 変換
+  train: true     # Step 4: FlashAvatar 学習
+  test: true      # Step 5: 検証動画生成
+
+logging:
+  level: INFO
+  file: ./logs/train_flashavatar.log
+  rotation: 10 MB
