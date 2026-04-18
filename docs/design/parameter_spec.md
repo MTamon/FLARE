@@ -1,8 +1,8 @@
 # 特徴抽出器 / レンダラー パラメータ仕様
 
 更新日: 2026-04-18  
-対象モデル (今版): DECA, SMIRK  
-未対応 (次版追記): FlashAvatar, HeadGaS, PIRender, Deep3DFaceRecon, 3DDFA V2
+対象モデル (今版): DECA, SMIRK, FlashAvatar  
+未対応 (次版追記): HeadGaS, PIRender, Deep3DFaceRecon, 3DDFA V2
 
 本ドキュメントは Converter を実装する際の一次情報源として使用すること。  
 コードを読まずにこのファイルだけで変換ロジックを書けることを目標とする。
@@ -18,6 +18,7 @@
 3. [SMIRK Extractor](#3-smirk-extractor)
 4. [DECA / SMIRK 差分まとめ](#4-deca--smirk-差分まとめ)
 5. [補助情報源: MediaPipe Face Landmarker](#5-補助情報源-mediapipe-face-landmarker)
+6. [FlashAvatar Renderer](#6-flashavatar-renderer)
 
 ---
 
@@ -346,3 +347,192 @@ SMIRK は `eyelid (B, 2)` を直接出力するため:
 eyes_pose = [[1,0,0,0,1,0, 1,0,0,0,1,0]]  # identity rotation × 2 (1, 12)
 eyelids   = [[0.0, 0.0]]                   # 開眼 (1, 2)
 ```
+
+---
+
+## 6. FlashAvatar Renderer
+
+- リポジトリ: `MTamon/FlashAvatar@release/cuda128-fixed` (third_party/FlashAvatar)
+- 実装: `flare/renderers/flashavatar.py`
+- 性能: **300 FPS @ 512×512** (RTX 3090 想定)
+- 学習: **対象人物ごとに個別学習が必要** (約 30 分 / RTX 3090、VRAM 12GB+)
+- 公開 Pretrained 重み: MingSHTM 公式から `.ply` をダウンロード可 (sanity check 用)
+
+### 6.1 入力: condition vector (120D)
+
+FlashAvatar はフレームごとに **1 本の 120 次元ベクトル** を受け取る。
+内部では以下の順序で結合 (`torch.cat`) される:
+
+```python
+condition = torch.cat([expr, jaw_pose, eyes_pose, eyelids], dim=-1)
+# condition.shape == (B, 120)
+```
+
+| キー | 形状 | 表現 | 物理的意味 |
+|---|---|---|---|
+| `expr` | (B, 100) | FLAME expression PCA 係数 | FLAME generic_model 第1-100 主成分。DECA/SMIRK の exp (50D) をゼロパディングして生成。 |
+| `jaw_pose` | (B, 6) | rotation_6d | 顎関節の回転。DECA/SMIRK の `pose[:, 3:6]` (axis-angle 3D) を rotation_6d に変換して生成。 |
+| `eyes_pose` | (B, 12) | rotation_6d × 2 | 左右眼球回転。`[left_6d(0:6) \| right_6d(6:12)]`。MediaPipe blendshape から生成 (§5 参照)。 |
+| `eyelids` | (B, 2) | [0.0, 1.0] スカラー | 瞼の閉じ度合い。`[left, right]`。SMIRK 経路は直接取得、DECA 経路は MediaPipe で補完。 |
+
+**条件ベクトルのオフセット一覧:**
+
+```
+condition[...,   0:100]  = expr      (100D)
+condition[..., 100:106]  = jaw_pose  (  6D)
+condition[..., 106:118]  = eyes_pose ( 12D)
+condition[..., 118:120]  = eyelids   (  2D)
+```
+
+#### 6.1.1 expr — DECA / SMIRK からの変換
+
+```
+DECA:  exp (B, 50) → F.pad(exp, (0, 50)) → expr (B, 100)
+SMIRK: exp (B, 50) → F.pad(exp, (0, 50)) → expr (B, 100)
+```
+
+第 51-100 主成分はゼロ充填。FlashAvatar の学習時も同様の充填を使用している場合、
+精度的損失はない。高精度が必要な場合は第 51-100 成分に対応した Extractor を検討すること。
+
+#### 6.1.2 jaw_pose — rotation 変換
+
+```
+pose[:, 3:6]  (axis-angle 3D)
+  ↓ Rodrigues
+rotation matrix (3×3)
+  ↓ 最初 2 列を row-major にフラット化
+jaw_pose  (B, 6)  = [R[:,0], R[:,1]].flatten()
+```
+
+FlashAvatar は jaw の global_rot (`pose[:, 0:3]`) を condition vector に含まない。
+global_rot はレンダリング時に FlashAvatar 内部の視点変換で処理される。
+
+#### 6.1.3 eyes_pose — レイアウト詳細
+
+```
+eyes_pose = [left_6d | right_6d]
+            [  0:6   |   6:12  ]
+```
+
+各 6D は rotation matrix の最初 2 列を row-major にフラット化したもの:
+
+```
+rot6d = [r00, r01, r10, r11, r20, r21]
+```
+
+#### 6.1.4 eyelids — 値域と向き
+
+```
+eyelids = [left_eyelid, right_eyelid]
+```
+
+- `0.0` = 完全開眼、`1.0` = 完全閉眼
+- SMIRK 出力キー名は `eyelid` (単数形) だが FlashAvatar のキーは `eyelids` (複数形)
+- Converter で rename が必要
+
+### 6.2 出力
+
+| 項目 | 値 |
+|---|---|
+| テンソル形状 | `(B, 3, H, W)` |
+| 値域 | `[0.0, 1.0]` (clamp 済み) |
+| チャネル順 | RGB |
+| デフォルト解像度 | **512×512 px** |
+| 背景色 | **黒 (0, 0, 0)** |
+| dtype | float32 |
+
+解像度が `output_size` と異なる場合は `F.interpolate(..., mode="bilinear")` でリサイズされる。
+
+### 6.3 setup() — モデルロード
+
+```python
+renderer.setup()
+# 実質的に以下を実行:
+# model = GaussianModel(sh_degree=3)
+# model.load_ply("<model_path>/point_cloud/iteration_30000/point_cloud.ply")
+# model.to(device)
+```
+
+| 項目 | 詳細 |
+|---|---|
+| ロードファイル | `<model_path>/point_cloud/iteration_30000/point_cloud.ply` |
+| イテレーション上書き | `setup(iteration=N)` で `iteration_N` に変更可 |
+| source_image | **不要** (FlashAvatar は per-person 学習済みモデルを使用するため) |
+| 学習ライブラリ | `scene.gaussian_model.GaussianModel`, `gaussian_renderer.render` |
+
+モデルパスの構造:
+
+```
+<model_path>/
+└── point_cloud/
+    └── iteration_30000/
+        └── point_cloud.ply   ← load_ply() がロードするファイル
+```
+
+### 6.4 render() — バッチ処理
+
+```python
+for i in range(batch_size):
+    cond_i = condition[i:i+1]          # (1, 120)
+    render_out = gaussian_render(
+        model, cond_i,
+        bg_color=torch.zeros(3, device=device),
+    )
+    image = render_out["render"]       # (3, H, W)
+```
+
+FlashAvatar の内部 Gaussian Renderer はバッチ非対応のため、B > 1 の場合はループ処理する。
+現状の `flare/renderers/flashavatar.py` 実装はこのループ方式を採用している。
+
+### 6.5 Converter — DECA / SMIRK → FlashAvatar 変換フロー
+
+#### DECA 経路 (DECAToFlameAdapter 実装済み)
+
+```
+DECA.extract(image)
+  → {exp(50), pose(6), cam(3), shape(100), ...}
+
+DECAToFlameAdapter.convert(deca_params)
+  → {
+      expr     : F.pad(exp, (0,50))          # (1, 100)
+      jaw_pose : aa_to_rot6d(pose[:, 3:6])   # (1, 6)
+      eyes_pose: zeros → MediaPipe 補完      # (1, 12)
+      eyelids  : zeros → MediaPipe 補完      # (1, 2)
+    }
+
+FlashAvatarRenderer.render(flame_params)
+  → image (1, 3, 512, 512)
+```
+
+実装ファイル: `flare/converters/deca_to_flame.py`
+
+#### SMIRK 経路 (SmirkToFlashAvatarAdapter — Phase 2 実装予定)
+
+```
+SMIRKExtractor.extract(image)
+  → {exp(50), pose(6), cam(3), shape(300), eyelid(2)}
+
+SmirkToFlashAvatarAdapter.convert(smirk_params)
+  → {
+      expr     : F.pad(exp, (0,50))                # (1, 100)
+      jaw_pose : aa_to_rot6d(pose[:, 3:6])         # (1, 6)  ⚠️ pose layout 確認後
+      eyes_pose: MediaPipe blendshape から生成      # (1, 12)
+      eyelids  : smirk_params["eyelid"]            # (1, 2)  キー rename: eyelid → eyelids
+    }
+
+FlashAvatarRenderer.render(flame_params)
+  → image (1, 3, 512, 512)
+```
+
+実装ファイル (予定): `flare/converters/smirk_to_flash_avatar.py`
+
+### 6.6 注意事項
+
+- **global_rot は condition vector に含まれない**: FlashAvatar は fixed canonical camera を使用する。
+  ビデオ合成時に頭部姿勢 (`pose[:, 0:3]`) を使いたい場合は、FlashAvatar 外部での
+  画像変換 (アフィン変換等) または FlashAvatar の camera matrix 書き換えが必要。
+- **顔以外の領域は背景黒**: 黒背景が不自然な場合は後処理でマスク合成すること。
+- **解像度はデフォルト 512×512**: `output_size` パラメータで変更可能だが、
+  学習時の解像度と一致させることを推奨 (通常 512×512)。
+- **person_id**: FlashAvatar モデルは人物ごとに異なる `.ply` ファイルを使用する。
+  `model_path` を `checkpoints/flashavatar/<person_id>/` のように人物 ID で切り替えること。
