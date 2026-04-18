@@ -37,15 +37,21 @@ class PipelineSettings(BaseModel):
         name: パイプライン名。実行ログやチェックポイントの識別に使用。
         fps: 目標フレームレート。リアルタイムモードの制御に使用。
         device: デフォルトの計算デバイス。device_mapで個別指定がない場合に使用。
-        converter_chain: パラメータ変換チェーンの定義。各要素は{"type": "<adapter名>"}。
+        converter_chain: パラメータ変換チェーンの定義。各要素は ``{"type": "<adapter名>"}``
+            を必須とし、Adapter のコンストラクタ引数を追加キーとして渡すことができる。
+            例: ``[{"type": "deca_to_flame", "use_mediapipe_supplement": true}]``。
     """
 
     name: str = Field(default="lhg_realtime_v1", description="パイプライン名")
     fps: int = Field(default=30, ge=1, le=300, description="目標フレームレート")
     device: str = Field(default="cuda:0", description="デフォルト計算デバイス")
-    converter_chain: list[dict[str, str]] = Field(
+    converter_chain: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="パラメータ変換チェーン定義",
+        description=(
+            "パラメータ変換チェーン定義。各要素は ``{\"type\": \"<adapter名>\"}`` を必須とし、"
+            "Adapterのコンストラクタ引数 (例: ``use_mediapipe_supplement: true``) を"
+            "追加キーとして渡すことができる。"
+        ),
     )
 
 

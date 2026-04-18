@@ -83,30 +83,37 @@ class AdapterRegistry:
         return self._adapters[key]
 
     def build_chain(
-        self, converter_chain: list[dict[str, str]]
+        self, converter_chain: list[dict[str, object]]
     ) -> list[BaseAdapter]:
         """config.yamlのconverter_chainリストからAdapterチェーンを構築する。
 
-        converter_chainの各要素は ``{"type": "<adapter_type_name>"}`` の形式。
+        converter_chainの各要素は ``{"type": "<adapter_type_name>"}`` を必須とする。
         type名は ``register()`` 時に自動生成された
         ``"{source_format}_to_{target_format}"`` と一致する必要がある。
 
+        ``"type"`` 以外のキーが存在する場合、それらを kwargs として登録済みAdapterと
+        同じクラスを再インスタンス化する。これにより config.yaml から Adapter の
+        コンストラクタ引数 (例: ``use_mediapipe_supplement: true``) を渡せる。
+
         Args:
             converter_chain: Adapter定義のリスト。各要素は ``"type"`` キーを
-                持つ辞書。例::
+                必須とする辞書。例::
 
                     [
                         {"type": "deca_to_flash_avatar"},
-                        {"type": "identity_to_identity"},
+                        {"type": "smirk_to_flash_avatar",
+                         "use_mediapipe_supplement": True},
                     ]
 
         Returns:
             変換チェーンを構成するBaseAdapterインスタンスのリスト。
-            チェーンが空の場合は空リストを返す。
+            ``"type"`` のみの場合は登録済みインスタンスを再利用し、追加 kwargs が
+            ある場合は新規インスタンスを生成する。チェーンが空の場合は空リストを返す。
 
         Raises:
             KeyError: 指定されたtype名に対応するAdapterが登録されていない場合。
             ValueError: converter_chainの要素に ``"type"`` キーが存在しない場合。
+            TypeError: 指定された kwargs が Adapter のコンストラクタに渡せない場合。
         """
         chain: list[BaseAdapter] = []
         for entry in converter_chain:
@@ -121,5 +128,13 @@ class AdapterRegistry:
                     f"Adapter type {type_name!r} not found. "
                     f"Registered types: {registered}"
                 )
-            chain.append(self._by_type[type_name])
+
+            kwargs = {k: v for k, v in entry.items() if k != "type"}
+            if not kwargs:
+                chain.append(self._by_type[type_name])
+                continue
+
+            prototype = self._by_type[type_name]
+            adapter_cls = type(prototype)
+            chain.append(adapter_cls(**kwargs))
         return chain

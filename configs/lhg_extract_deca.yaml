@@ -15,6 +15,12 @@ pipeline:
   name: lhg_extract_deca
   fps: 30
   device: cuda:0
+  # LHG 抽出パイプラインは自前のフロー (interpolation / sequence 分割) を持ち、
+  # FlashAvatar への直接変換は行わないため converter_chain は空のまま。
+  # ただし MediaPipe 由来の eyes_pose / eyelids を併用したい場合は、
+  # 下流で SMIRK / DECA 変換を行うときに ``use_mediapipe_supplement: true`` を
+  # 付けて Adapter を構築する。詳細は configs/realtime_flame.yaml を参照。
+  converter_chain: []
 
 extractor:
   type: deca

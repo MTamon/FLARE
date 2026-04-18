@@ -6,3 +6,7 @@
 	path = third_party/FlashAvatar
 	url = https://github.com/MTamon/FlashAvatar.git
 	branch = release/cuda128-fixed
+[submodule "third_party/smirk"]
+	path = third_party/smirk
+	url = https://github.com/MTamon/smirk.git
+	branch = release/cuda128

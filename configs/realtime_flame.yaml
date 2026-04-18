@@ -12,7 +12,13 @@ pipeline:
   fps: 30
   device: cuda:0
   converter_chain:
-    - type: deca_to_flame
+    # MediaPipe 補完を有効化したい場合は use_mediapipe_supplement: true を指定。
+    # DECA は本来 eyes_pose / eyelids を出力しないため、このフラグが ON のとき
+    # パイプラインが MediaPipe Face Landmarker から推定した値を Adapter に注入する。
+    # SMIRK ルートに切り替える場合は type: smirk_to_flash_avatar に変更する
+    # (SMIRK は eyelid をネイティブ出力するため、フラグの制御対象は eyes_pose のみ)。
+    - type: deca_to_flash_avatar
+      use_mediapipe_supplement: false
 
 extractor:
   type: deca
