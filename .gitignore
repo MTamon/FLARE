@@ -219,5 +219,6 @@ lightning_logs/**/*
 !docker-entry.sh
 !install/*.sh
 !scripts/*.sh
+!demos/*.sh
 
 wandb/
