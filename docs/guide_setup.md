@@ -514,11 +514,76 @@ python tool.py lhg-extract \
 
 ---
 
-## 4. トラブルシューティング
+## 4. CUDA 環境変数の設定 (conda 環境)
+
+DECA / FlashAvatar の `install_128.sh` が呼び出す依存パッケージの setup.py は
+`CUDA_HOME` / `CUDA_PATH` を参照して `${CUDA_HOME}/bin/nvcc` を探します。
+nvcc が PATH 上で 12.8 でも、`CUDA_PATH` が別バージョン (例: 11.8) を指していると
+ビルドエラーになるため、conda 環境に CUDA 12.8 を明示的に固定することを推奨します。
+
+### 現状確認
+
+```bash
+echo "CUDA_HOME=$CUDA_HOME"
+echo "CUDA_PATH=$CUDA_PATH"
+which nvcc
+nvcc --version | grep release
+ls -d /usr/local/cuda* 2>/dev/null
+```
+
+`CUDA_HOME` と `CUDA_PATH` が両方 `/usr/local/cuda-12.8` (あるいは
+シンボリックリンク `/usr/local/cuda`) になっていれば OK です。
+
+### conda 環境への CUDA 変数の永続化 (推奨)
+
+```bash
+conda activate <環境名>   # 例: int-flare / flare
+conda env config vars set \
+    CUDA_HOME=/usr/local/cuda-12.8 \
+    CUDA_PATH=/usr/local/cuda-12.8
+conda deactivate
+conda activate <環境名>
+echo "$CUDA_HOME $CUDA_PATH"  # /usr/local/cuda-12.8 /usr/local/cuda-12.8
+```
+
+`PATH` / `LD_LIBRARY_PATH` はシェル側で一度設定しておくのが確実です
+(`~/.bashrc` or `~/.zshrc` に追記):
+
+```bash
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}
+```
+
+### 一時的に切り替えたい場合
+
+現在のシェルだけで切り替えるには:
+
+```bash
+export CUDA_HOME=/usr/local/cuda-12.8
+export CUDA_PATH=/usr/local/cuda-12.8
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}
+```
+
+### setup スクリプト実行中の警告について
+
+以下の 2 つの警告は **無視可** です (ビルド・インストールは成功する):
+
+- `SetuptoolsDeprecationWarning: setup.py install is deprecated.`
+  - DECA 内の CUDA 拡張 (`standard_rasterize_cuda`) が旧式の `setup.py install`
+    を使っているため出るだけで、`.so` 生成と配置は完了する。
+- `W0000 ... There are no gcc-11 version bounds defined for CUDA version 12.8`
+  - PyTorch 側に gcc-11 × CUDA 12.8 の互換テーブル定義が無いだけ。実際の
+    コンパイルは通る。
+
+---
+
+## 5. トラブルシューティング
 
 | 症状 | 原因と対策 |
 |------|-----------|
 | `ModuleNotFoundError: No module named 'torch'` | PyTorch 未インストール。CUDA バージョンに合わせてインストール |
+| `error: nvcc not found at '/usr/local/cuda-11.8/bin/nvcc'` | `CUDA_PATH` / `CUDA_HOME` が古いバージョンを指している。§4 の手順で 12.8 に設定し直す |
 | `CUDA out of memory` | `device_map` で GPU 分散、または `batch_size` を減らす |
 | `nvdiffrast` ビルドエラー | CUDA Toolkit のバージョンと PyTorch の CUDA バージョンを一致させる |
 | `pytorch3d` インストールエラー | [公式ガイド](https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md) 参照。事前ビルド wheel を使う |
