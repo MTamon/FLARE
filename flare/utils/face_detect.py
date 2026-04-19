@@ -221,6 +221,8 @@ class FaceDetector:
         self._model_path = model_path
         self._solutions_detector: object | None = None
         self._tasks_detector: object | None = None
+        self._face_landmarker: object | None = None
+        self._face_landmarker_unavailable: bool = False
 
         if _USE_SOLUTIONS_API:
             self._solutions_detector = mp.solutions.face_detection.FaceDetection(
@@ -470,39 +472,43 @@ class FaceDetector:
         Returns:
             blendshape名→スコアの辞書、またはNone。
         """
+        if self._face_landmarker_unavailable:
+            return None
+
         try:
-            from mediapipe.tasks.python import BaseOptions
-            from mediapipe.tasks.python.vision import (
-                FaceLandmarker,
-                FaceLandmarkerOptions,
-            )
-            import pathlib
+            if self._face_landmarker is None:
+                from mediapipe.tasks.python import BaseOptions
+                from mediapipe.tasks.python.vision import (
+                    FaceLandmarker,
+                    FaceLandmarkerOptions,
+                )
+                import pathlib
 
-            mp_root = pathlib.Path(mp.__file__).parent
-            model_candidates = [
-                mp_root / "modules" / "face_landmarker" / "face_landmarker.task",
-                mp_root / "modules" / "face_landmarker" / "face_landmarker_v2.task",
-            ]
-            model_path: Optional[str] = None
-            for candidate in model_candidates:
-                if candidate.exists():
-                    model_path = str(candidate)
-                    break
+                mp_root = pathlib.Path(mp.__file__).parent
+                model_candidates = [
+                    mp_root / "modules" / "face_landmarker" / "face_landmarker.task",
+                    mp_root / "modules" / "face_landmarker" / "face_landmarker_v2.task",
+                ]
+                model_path: Optional[str] = None
+                for candidate in model_candidates:
+                    if candidate.exists():
+                        model_path = str(candidate)
+                        break
 
-            if model_path is None:
-                return None
+                if model_path is None:
+                    self._face_landmarker_unavailable = True
+                    return None
 
-            options = FaceLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path=model_path),
-                output_face_blendshapes=True,
-                num_faces=1,
-            )
-            landmarker = FaceLandmarker.create_from_options(options)
+                options = FaceLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=model_path),
+                    output_face_blendshapes=True,
+                    num_faces=1,
+                )
+                self._face_landmarker = FaceLandmarker.create_from_options(options)
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result = landmarker.detect(mp_image)
-            landmarker.close()
+            result = self._face_landmarker.detect(mp_image)
 
             if (
                 result.face_blendshapes is None
@@ -562,3 +568,6 @@ class FaceDetector:
         if self._tasks_detector is not None:
             self._tasks_detector.close()
             self._tasks_detector = None
+        if self._face_landmarker is not None:
+            self._face_landmarker.close()
+            self._face_landmarker = None

@@ -17,6 +17,7 @@
 #   bash install/setup_all.sh --deca-only
 #   bash install/setup_all.sh --flashavatar-only
 #   bash install/setup_all.sh --skip-smirk
+#   bash install/setup_all.sh --skip-deca
 #   bash install/setup_all.sh --skip-flashavatar
 #
 # 所要時間の目安 (初回、RTX 3090 / 高速インターネット環境):
