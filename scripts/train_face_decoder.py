@@ -160,7 +160,7 @@ class VideoFrameDataset(Dataset):
             # Crop for DECA (224x224)
             try:
                 cropped = face_detector.crop_and_align(
-                    frame, bbox, size=crop_size
+                    frame, bbox, size=crop_size, margin_scale=1.25
                 )
             except Exception:
                 continue
@@ -257,12 +257,15 @@ class VideoFrameDataset(Dataset):
 
         # 全シーケンスのパラメータと区間を収集
         segments: list[dict[str, np.ndarray]] = []
+        extractor_types: set[str] = set()
         for f in npz_files:
             d = np.load(str(f))
             section = d["section"]  # [start, end]
             # デノーマライズ
             angle = d["angle"] * d["angle_std"] + d["angle_mean"]
             exp = d["expression"] * d["expression_std"] + d["expression_mean"]
+            if "extractor_type" in d:
+                extractor_types.add(str(d["extractor_type"].item()).lower())
             segments.append({
                 "start": int(section[0]),
                 "end": int(section[1]),
@@ -270,6 +273,22 @@ class VideoFrameDataset(Dataset):
                 "expression": exp,
                 "jaw_pose": d["jaw_pose"] if "jaw_pose" in d else None,
             })
+
+        if len(extractor_types) > 1:
+            raise ValueError(
+                f"npz_dir に複数の extractor_type が混在しています: {extractor_types}"
+            )
+        extractor_type: str = next(iter(extractor_types), "")
+        is_flame = extractor_type in ("deca", "smirk")
+        # DECA/SMIRK: cond = exp(50) + angle(3) + jaw_pose(3) = 56D
+        # BFM(deep3d/3ddfa/tdddfa): cond = exp(64) + angle(3) = 67D
+        # extractor_type が npz から読めない場合 (古い npz) は jaw_pose の
+        # 有無で従来通り推定する。
+        crop_margin_scale = 1.25 if is_flame else 1.0
+        print(
+            f"[Prepare] extractor_type={extractor_type or '(unknown)'}, "
+            f"is_flame={is_flame}, crop_margin_scale={crop_margin_scale}"
+        )
 
         # 動画フレームを走査
         cap = cv2.VideoCapture(video_path)
@@ -302,7 +321,8 @@ class VideoFrameDataset(Dataset):
 
                     try:
                         cropped = face_detector.crop_and_align(
-                            frame, bbox, size=crop_size
+                            frame, bbox, size=crop_size,
+                            margin_scale=crop_margin_scale,
                         )
                     except Exception:
                         break
@@ -315,10 +335,23 @@ class VideoFrameDataset(Dataset):
 
                     exp_vec = seg["expression"][local_idx]
                     angle_vec = seg["angle"][local_idx]
-                    parts = [exp_vec, angle_vec]
-                    if seg["jaw_pose"] is not None:
-                        parts.append(seg["jaw_pose"][local_idx])
-                    cond = np.concatenate(parts).astype(np.float32)
+                    if is_flame:
+                        # DECA/SMIRK: jaw_pose は必須 (56D)
+                        if seg["jaw_pose"] is None:
+                            raise ValueError(
+                                f"{extractor_type!r} npz に jaw_pose が含まれていません: "
+                                f"{npz_dir}"
+                            )
+                        cond = np.concatenate(
+                            [exp_vec, angle_vec, seg["jaw_pose"][local_idx]]
+                        ).astype(np.float32)
+                    else:
+                        # BFM (deep3d/3ddfa/tdddfa) もしくは extractor_type 不明:
+                        # jaw_pose の有無で従来通り推定 (67D / 53D)。
+                        parts = [exp_vec, angle_vec]
+                        if seg["jaw_pose"] is not None:
+                            parts.append(seg["jaw_pose"][local_idx])
+                        cond = np.concatenate(parts).astype(np.float32)
 
                     all_frames.append(target_rgb.astype(np.float32) / 255.0)
                     all_conditions.append(cond)

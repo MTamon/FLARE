@@ -384,7 +384,12 @@ class RealtimePipeline:
         """
         crop_size = config.extractor.input_size
         device = config.device_map.extractor
-        logger.info("Extract thread started (device: {})", device)
+        extractor_type = str(getattr(config.extractor, "type", "")).lower()
+        margin_scale = 1.25 if extractor_type in ("deca", "smirk") else 1.0
+        logger.info(
+            "Extract thread started (device: {}, margin_scale: {})",
+            device, margin_scale,
+        )
 
         while self._running.is_set():
             data = self._capture_buffer.get()
@@ -401,7 +406,7 @@ class RealtimePipeline:
                         f"No face at frame {frame_idx}"
                     )
                 cropped = self._face_detector.crop_and_align(
-                    frame, bbox, size=crop_size
+                    frame, bbox, size=crop_size, margin_scale=margin_scale
                 )
                 self._frame_drop_handler.apply(
                     buffer=self._extract_buffer,

@@ -181,6 +181,55 @@ def _blendshapes_to_flame_eye(
     return eyes_pose, eyelids
 
 
+def compute_fixed_bbox(
+    bboxes: list[tuple[int, int, int, int]],
+    margin_scale: float = 2.0,
+    frame_shape: Optional[tuple[int, int]] = None,
+) -> tuple[int, int, int, int]:
+    """複数フレームの bbox から、フレーム間で固定使用する正方形 bbox を算出する。
+
+    各フレームで個別に顔検出した結果は、頭部の微小な揺れを拾ってクロップ位置・
+    サイズが揺らぎ、DECA の ``cam`` パラメータがフレーム間でジッタする原因
+    となる。本関数は中央値ベースで安定した正方形領域を 1 度だけ決定し、
+    以降全フレームで同じ領域をクロップに使うことを想定する。
+
+    Args:
+        bboxes: 各フレームの ``(x1, y1, x2, y2)`` のリスト。空リストは不可。
+        margin_scale: 中央値の長辺に対する拡大率。``1.5〜2.0`` 程度が
+            推奨 (FlashAvatar の imgs/ 用途では頭全体 + 首が映る ``2.0``)。
+        frame_shape: ``(H, W)`` を渡すとフレーム外を削るクリップを行う。
+            ``None`` の場合はクリップせずそのまま返す (パディング前提)。
+
+    Returns:
+        正方形に整形済みの ``(x1, y1, x2, y2)``。すべて整数。
+
+    Raises:
+        ValueError: ``bboxes`` が空。
+    """
+    if not bboxes:
+        raise ValueError("bboxes must not be empty")
+
+    centers_x = [(b[0] + b[2]) / 2.0 for b in bboxes]
+    centers_y = [(b[1] + b[3]) / 2.0 for b in bboxes]
+    sides = [max(b[2] - b[0], b[3] - b[1]) for b in bboxes]
+
+    cx = int(round(float(np.median(centers_x))))
+    cy = int(round(float(np.median(centers_y))))
+    half = int(round(float(np.median(sides)) * margin_scale / 2))
+
+    x1, y1 = cx - half, cy - half
+    x2, y2 = cx + half, cy + half
+
+    if frame_shape is not None:
+        h, w = frame_shape
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+
+    return (x1, y1, x2, y2)
+
+
 class FaceDetector:
     """MediaPipeベースの顔検出・クロッピングクラス。
 
@@ -358,6 +407,7 @@ class FaceDetector:
         frame: np.ndarray,
         bbox: tuple[int, int, int, int],
         size: int = 224,
+        margin_scale: float = 1.0,
     ) -> np.ndarray:
         """バウンディングボックスで顔領域を切り出し、指定サイズにリサイズする。
 
@@ -369,6 +419,10 @@ class FaceDetector:
             bbox: 顔のバウンディングボックス ``(x1, y1, x2, y2)``。
                 ``detect()`` の戻り値をそのまま渡す。
             size: 出力画像の一辺のサイズ（ピクセル）。正方形画像を生成する。
+            margin_scale: bbox の長辺に対する拡大率。``1.0`` は ``detect()``
+                の bbox 端ぴったりで切り抜き。DECA / SMIRK は学習時に
+                ``1.25`` 程度のマージンを期待するため、抽出パイプラインでは
+                ``1.25`` を渡す。
 
         Returns:
             クロッピング・リサイズ済みの顔画像。形状は ``(size, size, 3)``、
@@ -379,7 +433,7 @@ class FaceDetector:
 
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
-        half_side = max(x2 - x1, y2 - y1) // 2
+        half_side = int(max(x2 - x1, y2 - y1) * margin_scale / 2)
 
         sq_x1 = cx - half_side
         sq_y1 = cy - half_side

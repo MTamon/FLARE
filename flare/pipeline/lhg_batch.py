@@ -560,7 +560,10 @@ class LHGBatchPipeline:
             return None
 
         try:
-            cropped = self._face_detector.crop_and_align(frame, bbox, size=input_size)
+            margin_scale = 1.25 if self._extractor_type in ("deca", "smirk") else 1.0
+            cropped = self._face_detector.crop_and_align(
+                frame, bbox, size=input_size, margin_scale=margin_scale
+            )
         except Exception as e:
             logger.debug("crop_and_align error: {}", e)
             return None

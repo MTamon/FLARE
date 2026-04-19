@@ -6,12 +6,13 @@ per-frame の .pt ファイルとして保存する。出力ファイルは Flas
 FlameConverter が直接読み込める形式 (torch.save された dict) 。
 
 ディレクトリ構成 (出力):
-    <out_dir>/imgs/00001.jpg        # 1-indexed フレーム画像
+    <out_dir>/imgs/00001.jpg        # 1-indexed フレーム画像 (固定クロップ)
     <out_dir>/imgs/00002.jpg
     ...
     <out_dir>/deca_outputs/00000.pt # 0-indexed DECA 出力 (.pt)
     <out_dir>/deca_outputs/00001.pt
     ...
+    <out_dir>/crop_region.json      # 固定クロップ領域 (デバッグ用)
     <out_dir>/extract_log.json      # 処理ログ (スキップフレーム等)
 
 インデックスのずれ (frame_delta=1):
@@ -19,6 +20,14 @@ FlameConverter が直接読み込める形式 (torch.save された dict) 。
     .frame 00000 は imgs/00001.jpg に対応する。
     本スクリプトは imgs を 1-indexed、deca_outputs を 0-indexed で保存し
     この対応関係を維持する。
+
+クロップ戦略 (2-pass):
+    Phase 0: 先頭 ``--bbox_sample_frames`` 枚 (デフォルト 200) から bbox を
+        収集 → 中央値 + ``--fixed_margin`` (デフォルト 2.0) で正方形領域を
+        決定し ``crop_region.json`` に保存。
+    Phase 1: imgs/ には固定領域を切り抜いて保存 (FlashAvatar の cam が
+        フレーム間で安定する)。DECA に渡す画像は毎フレーム個別検出 +
+        ``--deca_margin`` (デフォルト 1.25) で再クロップ → 224×224。
 
 Usage:
     python scripts/extract_deca_frames.py \\
@@ -28,6 +37,9 @@ Usage:
         [--deca_dir third_party/DECA] \\
         [--device cuda:0] \\
         [--img_size 512] \\
+        [--bbox_sample_frames 200] \\
+        [--fixed_margin 2.0] \\
+        [--deca_margin 1.25] \\
         [--skip_existing]
 """
 
@@ -76,6 +88,24 @@ def parse_args() -> argparse.Namespace:
         help="保存する imgs フレームの一辺サイズ (px)",
     )
     p.add_argument(
+        "--bbox_sample_frames",
+        type=int,
+        default=200,
+        help="Phase 0 で bbox 収集に使うフレーム数 (動画長より小さい場合は先頭から)",
+    )
+    p.add_argument(
+        "--fixed_margin",
+        type=float,
+        default=2.0,
+        help="imgs/ 用固定クロップの長辺マージン倍率 (頭+首が入る程度)",
+    )
+    p.add_argument(
+        "--deca_margin",
+        type=float,
+        default=1.25,
+        help="DECA 入力 (224) 用の per-frame 再クロップマージン倍率",
+    )
+    p.add_argument(
         "--skip_existing",
         action="store_true",
         help="既存の deca_outputs をスキップして再開",
@@ -108,11 +138,98 @@ def _load_extractor_and_detector(model_path: str, deca_dir: str, device: str):
 def _frame_to_tensor(
     frame_bgr: np.ndarray, device: str = "cpu"
 ) -> torch.Tensor:
-    """BGR numpy フレーム → DECA 用テンソル (1, 3, 224, 224)。"""
+    """BGR numpy フレーム (H, W, 3) → DECA 用テンソル (1, 3, 224, 224)。"""
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    frame_224 = cv2.resize(frame_rgb, (224, 224))
-    t = torch.from_numpy(frame_224).permute(2, 0, 1).float() / 255.0
+    if frame_rgb.shape[:2] != (224, 224):
+        frame_rgb = cv2.resize(frame_rgb, (224, 224))
+    t = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
     return t.unsqueeze(0).to(device)
+
+
+def _crop_with_bbox(
+    frame: np.ndarray, bbox: tuple[int, int, int, int], size: int
+) -> np.ndarray:
+    """固定 bbox でクロップ + ゼロパディング + 指定サイズへリサイズ。"""
+    h, w, _ = frame.shape
+    x1, y1, x2, y2 = bbox
+
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - w)
+    pad_bottom = max(0, y2 - h)
+
+    cx1 = max(0, x1)
+    cy1 = max(0, y1)
+    cx2 = min(w, x2)
+    cy2 = min(h, y2)
+
+    cropped = frame[cy1:cy2, cx1:cx2]
+    if pad_left or pad_top or pad_right or pad_bottom:
+        cropped = cv2.copyMakeBorder(
+            cropped, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=(0, 0, 0),
+        )
+    return cv2.resize(cropped, (size, size), interpolation=cv2.INTER_LINEAR)
+
+
+def _collect_fixed_bbox(
+    video_path: str,
+    face_detector,
+    sample_frames: int,
+    fixed_margin: float,
+) -> tuple[tuple[int, int, int, int], dict]:
+    """Phase 0: 動画先頭から bbox を収集し、固定クロップ領域を算出する。
+
+    Returns:
+        (fixed_bbox, info_dict)。info_dict は crop_region.json に書く内容。
+    """
+    from flare.utils.face_detect import compute_fixed_bbox
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"動画を開けません: {video_path}")
+
+    bboxes: list[tuple[int, int, int, int]] = []
+    frame_shape: tuple[int, int] | None = None
+    scanned = 0
+    detected = 0
+
+    while scanned < sample_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_shape is None:
+            frame_shape = (frame.shape[0], frame.shape[1])
+        scanned += 1
+        bbox = face_detector.detect(frame)
+        if bbox is not None:
+            bboxes.append(bbox)
+            detected += 1
+
+    cap.release()
+
+    if not bboxes:
+        raise RuntimeError(
+            f"Phase 0: 先頭 {scanned} フレームで顔を 1 度も検出できませんでした"
+        )
+
+    fixed_bbox = compute_fixed_bbox(
+        bboxes, margin_scale=fixed_margin, frame_shape=None
+    )
+    logger.info(
+        "Phase 0: scanned={}, detected={}, fixed_bbox={} (margin={})",
+        scanned, detected, fixed_bbox, fixed_margin,
+    )
+
+    info = {
+        "video": str(video_path),
+        "phase0_scanned_frames": scanned,
+        "phase0_detected_frames": detected,
+        "fixed_margin_scale": fixed_margin,
+        "frame_shape_hw": list(frame_shape) if frame_shape else None,
+        "fixed_bbox_xyxy": list(fixed_bbox),
+    }
+    return fixed_bbox, info
 
 
 def main() -> None:
@@ -126,17 +243,30 @@ def main() -> None:
 
     logger.add(str(out_dir / "extract_deca.log"), rotation="10 MB")
     logger.info("=== extract_deca_frames.py ===")
-    logger.info("video   : {}", args.video)
-    logger.info("out_dir : {}", out_dir)
-    logger.info("device  : {}", args.device)
-    logger.info("img_size: {}", args.img_size)
+    logger.info("video       : {}", args.video)
+    logger.info("out_dir     : {}", out_dir)
+    logger.info("device      : {}", args.device)
+    logger.info("img_size    : {}", args.img_size)
+    logger.info("fixed_margin: {}  (Phase 0 imgs/ クロップ)", args.fixed_margin)
+    logger.info("deca_margin : {}  (per-frame DECA 入力)", args.deca_margin)
 
     # モデルのロード
     extractor, face_detector = _load_extractor_and_detector(
         args.model_path, args.deca_dir, args.device
     )
 
-    # 動画のオープン
+    # ---- Phase 0: 固定クロップ領域の決定 ----
+    fixed_bbox, crop_info = _collect_fixed_bbox(
+        args.video, face_detector,
+        sample_frames=args.bbox_sample_frames,
+        fixed_margin=args.fixed_margin,
+    )
+    crop_info["deca_margin_scale"] = args.deca_margin
+    crop_info["img_size"] = args.img_size
+    with open(out_dir / "crop_region.json", "w") as f:
+        json.dump(crop_info, f, indent=2, ensure_ascii=False)
+
+    # ---- Phase 1: 抽出 ----
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         logger.error("動画を開けません: {}", args.video)
@@ -146,12 +276,11 @@ def main() -> None:
     fps = cap.get(cv2.CAP_PROP_FPS)
     logger.info("動画フレーム数: {}, FPS: {:.1f}", total_frames, fps)
 
-    # 前フレームのキャリーフォワード用
     last_good_codedict: dict[str, torch.Tensor] | None = None
     skipped_frames: list[int] = []
     carry_forward_frames: list[int] = []
 
-    frame_idx = 0  # 0-indexed (deca_outputs / .frame のインデックス)
+    frame_idx = 0
     processed = 0
     max_frames = args.max_frames or total_frames
 
@@ -160,11 +289,11 @@ def main() -> None:
         if not ret or frame_idx >= max_frames:
             break
 
-        # ---- imgs/ への保存 (1-indexed) ----
+        # ---- imgs/ への保存 (固定クロップ + img_size リサイズ) ----
         img_name = f"{frame_idx + 1:05d}.jpg"
         img_path = imgs_dir / img_name
-        frame_resized = cv2.resize(frame_bgr, (args.img_size, args.img_size))
-        cv2.imwrite(str(img_path), frame_resized)
+        fixed_crop = _crop_with_bbox(frame_bgr, fixed_bbox, args.img_size)
+        cv2.imwrite(str(img_path), fixed_crop)
 
         # ---- 既存スキップ ----
         pt_path = deca_dir_out / f"{frame_idx:05d}.pt"
@@ -172,25 +301,25 @@ def main() -> None:
             frame_idx += 1
             continue
 
-        # ---- 顔検出 + DECA 抽出 ----
+        # ---- 顔検出 + DECA 抽出 (per-frame, deca_margin で再クロップ) ----
         try:
             bbox = face_detector.detect(frame_bgr)
             if bbox is None:
                 raise RuntimeError("顔を検出できませんでした")
 
-            cropped = face_detector.crop_and_align(frame_bgr, bbox, size=224)
+            cropped = face_detector.crop_and_align(
+                frame_bgr, bbox, size=224, margin_scale=args.deca_margin
+            )
             image_tensor = _frame_to_tensor(cropped, args.device)
 
             with torch.no_grad():
                 codedict = extractor.extract(image_tensor)
 
-            # CPU へ移動して保存
             codedict_cpu = {k: v.cpu() for k, v in codedict.items()}
             torch.save(codedict_cpu, str(pt_path))
             last_good_codedict = codedict_cpu
 
         except Exception as e:
-            # 顔未検出・推論エラー → キャリーフォワード
             if last_good_codedict is not None:
                 torch.save(last_good_codedict, str(pt_path))
                 carry_forward_frames.append(frame_idx)
@@ -199,7 +328,6 @@ def main() -> None:
                     frame_idx, e,
                 )
             else:
-                # 先頭フレームで失敗した場合はスキップ記録のみ
                 skipped_frames.append(frame_idx)
                 logger.error(
                     "frame {:05d}: 抽出失敗・補完不可 ({})", frame_idx, e
@@ -216,7 +344,6 @@ def main() -> None:
 
     # ---- スキップ埋め (先頭スキップは後続の最初の成功フレームで埋める) ----
     if skipped_frames:
-        # 最初の .pt ファイルを先頭スキップ分にコピー
         fallback_pt = None
         for i in range(frame_idx):
             pt = deca_dir_out / f"{i:05d}.pt"
@@ -240,6 +367,9 @@ def main() -> None:
         "skipped_frames": skipped_frames,
         "carry_forward_frames": carry_forward_frames,
         "img_size": args.img_size,
+        "fixed_margin_scale": args.fixed_margin,
+        "deca_margin_scale": args.deca_margin,
+        "fixed_bbox_xyxy": list(fixed_bbox),
         "imgs_dir": str(imgs_dir),
         "deca_outputs_dir": str(deca_dir_out),
     }
@@ -254,6 +384,7 @@ def main() -> None:
     )
     logger.info("imgs/        : {}", imgs_dir)
     logger.info("deca_outputs/: {}", deca_dir_out)
+    logger.info("crop_region  : {}", out_dir / "crop_region.json")
 
     if skipped_frames:
         logger.warning(

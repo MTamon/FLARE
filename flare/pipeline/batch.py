@@ -213,6 +213,8 @@ class BatchPipeline:
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         crop_size = config.extractor.input_size
+        extractor_type = str(getattr(config.extractor, "type", "")).lower()
+        margin_scale = 1.25 if extractor_type in ("deca", "smirk") else 1.0
 
         crops_list: list[np.ndarray] = []
         processed = 0
@@ -240,7 +242,7 @@ class BatchPipeline:
                         f"No face detected at frame {frame_idx}"
                     )
                 cropped = self._face_detector.crop_and_align(
-                    frame, bbox, size=crop_size
+                    frame, bbox, size=crop_size, margin_scale=margin_scale
                 )
                 crops_list.append(cropped)
                 processed += 1
