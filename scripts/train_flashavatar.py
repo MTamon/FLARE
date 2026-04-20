@@ -374,11 +374,14 @@ def _run_masks(data_dir: Path, cfg: TrainFlashAvatarConfig, flare_root: Path) ->
     """Step 2: MediaPipe マスク生成。"""
     script = flare_root / "scripts" / "generate_masks_mediapipe.py"
     imgs_dir = data_dir / "imgs"
+    # cuda:0 形式から cuda/cpu のみに正規化 (MediaPipe は device index を取らない)
+    mp_device = "cuda" if cfg.pipeline.device.startswith("cuda") else "cpu"
     cmd = [
         sys.executable, str(script),
         "--imgs_dir", str(imgs_dir),
         "--out_dir", str(data_dir),
         "--img_size", str(cfg.video.img_size),
+        "--device", mp_device,
     ]
     _run(cmd, cwd=flare_root)
 
@@ -409,6 +412,8 @@ def _run_convert(
         "--img_size", f"{img_size},{img_size}",
         "--ext", ".pt",
     ]
+    if cfg.flashavatar.head_pose_aware:
+        cmd.append("--head_pose_aware")
     _run(cmd, cwd=fa_abs)
 
     n_frames_out = len(list(frame_dir.glob("*.frame"))) if frame_dir.exists() else 0
@@ -433,6 +438,8 @@ def _run_train(
         "--iterations", str(iterations),
         "--image_res", str(img_size),
     ]
+    if cfg.flashavatar.head_pose_aware:
+        cmd.append("--head_pose_aware")
 
     if cfg.flashavatar.resume_if_exists and ckpt_dir.exists():
         existing = sorted(ckpt_dir.glob("*.pth"))
@@ -560,6 +567,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Step 5 のみ実行 (学習済みモデルで推論)",
     )
+    p.add_argument(
+        "--head_pose_aware",
+        action="store_true",
+        help=(
+            "頭部位置考慮モードを有効化 (YAML の flashavatar.head_pose_aware 上書き)。"
+        ),
+    )
     return p.parse_args()
 
 
@@ -576,6 +590,8 @@ def _apply_cli_overrides(cfg: TrainFlashAvatarConfig, args: argparse.Namespace) 
         data["video"]["img_size"] = args.img_size
     if args.target_fps is not None:
         data["video"]["target_fps"] = args.target_fps
+    if args.head_pose_aware:
+        data["flashavatar"]["head_pose_aware"] = True
     return TrainFlashAvatarConfig.model_validate(data)
 
 

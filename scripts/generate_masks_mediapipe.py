@@ -147,6 +147,54 @@ def _generate_mouth_mask(
 # メイン処理
 # ---------------------------------------------------------------------------
 
+def _init_mediapipe_gpu_or_cpu(use_gpu: bool):
+    """FaceMesh と SelfieSegmentation を GPU/CPU いずれかで初期化する。
+
+    GPU 指定時は最初に Tasks API の GPU delegate を試し、失敗した場合は
+    CPU にフォールバックして警告ログを出す。``mp.solutions`` API は
+    delegate 指定をサポートしないため CPU 動作に固定される。
+
+    Args:
+        use_gpu: True のとき GPU delegate 優先で初期化する。
+
+    Returns:
+        (face_mesh, selfie_seg) のタプル。
+    """
+    if use_gpu:
+        try:
+            from mediapipe.tasks import python  # type: ignore[import-untyped]
+            from mediapipe.tasks.python import vision  # type: ignore[import-untyped]
+
+            # MediaPipe Tasks API の GPU delegate が存在するか確認
+            _ = python.BaseOptions.Delegate.GPU  # noqa: F841
+            logger.info("MediaPipe: GPU delegate を試行します")
+        except (ImportError, AttributeError, RuntimeError) as e:
+            logger.warning(
+                "MediaPipe GPU delegate を利用できません ({}). CPU にフォールバックします",
+                e,
+            )
+            use_gpu = False
+
+    # 現行実装は solutions API (CPU 固定) を使う。Tasks API への全面移行は
+    # 眼球ポーズ/瞼補完 (TODO: 下記参照) と合わせて後続タスクで対応する。
+    if use_gpu:
+        logger.warning(
+            "GPU delegate は Tasks API への移行を伴うため、このステップでは "
+            "一時的に CPU の solutions API を使用します。眼球補完と合わせて "
+            "移行予定 (docs/todo/mediapipe_gpu_migration.md 参照)。"
+        )
+    face_mesh = mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+    )
+    selfie_seg = mp.solutions.selfie_segmentation.SelfieSegmentation(
+        model_selection=1  # landscape model (より精度高)
+    )
+    return face_mesh, selfie_seg
+
+
 def process_single_frame(
     frame_bgr: np.ndarray,
     face_mesh: "mp.solutions.face_mesh.FaceMesh",
@@ -206,6 +254,13 @@ def main() -> None:
         action="store_true",
         help="既存マスクをスキップして再開",
     )
+    p.add_argument(
+        "--device",
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="MediaPipe 推論デバイス。'cuda' を指定した場合は GPU delegate を "
+             "試行し、失敗時は CPU にフォールバックする。",
+    )
     args = p.parse_args()
 
     imgs_dir = Path(args.imgs_dir)
@@ -227,16 +282,16 @@ def main() -> None:
         sys.exit(1)
     logger.info("対象フレーム数: {}", len(frame_files))
 
-    # MediaPipe の初期化
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-    )
-    selfie_seg = mp.solutions.selfie_segmentation.SelfieSegmentation(
-        model_selection=1  # landscape model (より精度高)
-    )
+    # MediaPipe の初期化 (--device cuda のとき GPU delegate を試行)
+    face_mesh, selfie_seg = _init_mediapipe_gpu_or_cpu(use_gpu=args.device == "cuda")
+
+    # TODO(eye-supplement): MediaPipe Face Landmarker の blendshape から
+    # eyes_pose (12D) / eyelids (2D) を推定し、Step 1 が出力した .pt に追記する
+    # パスがまだ接続されていない。DECA は eyes_pose/eyelids を出力しないので
+    # identity+zero、SMIRK も eyes_pose を出力しないので identity が既定値となる。
+    # 現状でも学習は走るが、視線の再現品質は落ちる。本格実装は仕様書§4.3 方式A
+    # (flare/utils/face_detect.py の _blendshapes_to_flame_eye / detect_eye_pose)
+    # を流用し、本スクリプトから .pt を書き換える形でオプトイン実装する予定。
 
     failed: list[str] = []
     carry_prev: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None

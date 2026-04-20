@@ -74,6 +74,12 @@ flashavatar:
   # 既存チェックポイントを自動検出して --start_checkpoint で学習を再開する。
   resume_if_exists: true
 
+  # 頭部位置考慮モード。元画像の中で検出された頭部 bbox 中心をクロップ座標空間に
+  # 写像し、Step 3 で K の principal point を、Step 4 で world-view translation
+  # を per-frame に補正する。DECA/SMIRK の追従クロップで失われた元画像空間での
+  # 頭部位置を Gaussian 配置に反映するオプトイン機能。
+  head_pose_aware: false
+
 stages:
   # 各ステージの実行制御。再実行時の時間短縮用に false にできる。
   extract: true   # Step 1: フレーム抽出 + per-frame 特徴抽出

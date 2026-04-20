@@ -1,0 +1,243 @@
+diff --git a/scene/__init__.py b/scene/__init__.py
+index 34ced98..fb0dc52 100644
+--- a/scene/__init__.py
++++ b/scene/__init__.py
+@@ -15,8 +15,12 @@ from utils.graphics_utils import focal2fov
+ 
+ 
+ class Scene_mica:
+-    def __init__(self, datadir, mica_datadir, train_type, white_background, device):
++    def __init__(self, datadir, mica_datadir, train_type, white_background, device, head_pose_aware=False):
+         ## train_type: 0 for train, 1 for test, 2 for eval
++        ## head_pose_aware: when True, use bbox metadata from each .frame to
++        ## shift the camera principal point so rendered Gaussians align with
++        ## the detected head position inside the cropped image (keeps K[0,0]
++        ## and K[1,1] intact, adjusts only cx/cy per frame).
+         frame_delta = 1 # default mica-tracking starts from the second frame
+         images_folder = os.path.join(datadir, "imgs")
+         parsing_folder = os.path.join(datadir, "parsing")
+@@ -73,6 +77,43 @@ class Scene_mica:
+             R = np.transpose(w2cR) # R is stored transposed due to 'glm' in CUDA code
+             T = w2cT
+ 
++            # 頭部位置考慮モード: per-frame の bbox_center から逆向きの世界座標
++            # オフセットを求め、weak-perspective translation T[0], T[1] に
++            # 上乗せして Gaussian の 2D 投影位置をクロップ内の検出頭部中心に
++            # 合わせる。bbox メタが欠けているフレームは従来通り無補正で扱う。
++            # NOTE: 3DGS レンダラは FoV ベースで principal point を取らないため
++            #       flame_converter が .frame の K に書いた cx/cy は参照されず、
++            #       ここでは T の x/y 成分を調整する方式を採用する。
++            if head_pose_aware and 'bbox' in payload:
++                bbox_meta = payload['bbox']
++                if (
++                    'bbox_center' in bbox_meta
++                    and 'crop_bbox' in bbox_meta
++                    and 'crop_img_size' in bbox_meta
++                ):
++                    bbox_center = torch.as_tensor(bbox_meta['bbox_center']).view(-1).float()
++                    crop_bbox = torch.as_tensor(bbox_meta['crop_bbox']).view(-1).float()
++                    crop_img_size = torch.as_tensor(bbox_meta['crop_img_size']).view(-1).float()
++                    fx1 = float(crop_bbox[0])
++                    fy1 = float(crop_bbox[1])
++                    fx2 = float(crop_bbox[2])
++                    crop_w_px = max(fx2 - fx1, 1.0)
++                    scale_to_crop = float(crop_img_size[0]) / crop_w_px
++                    cx_crop = (float(bbox_center[0]) - fx1) * scale_to_crop
++                    cy_crop = (float(bbox_center[1]) - fy1) * scale_to_crop
++                    img_w_render = float(crop_img_size[0])
++                    img_h_render = float(crop_img_size[1])
++                    fl_x_render = float(K[0, 0])
++                    fl_y_render = float(K[1, 1])
++                    t_z = float(T[2]) if float(T[2]) != 0.0 else 1e-6
++                    # Δpx_render = bbox_center_crop - img_center
++                    # Δworld = Δpx_render * depth / focal
++                    dx_world = (cx_crop - img_w_render / 2.0) * t_z / max(fl_x_render, 1e-6)
++                    dy_world = (cy_crop - img_h_render / 2.0) * t_z / max(fl_y_render, 1e-6)
++                    T = np.asarray(T, dtype=np.float32).copy()
++                    T[0] = float(T[0]) + dx_world
++                    T[1] = float(T[1]) + dy_world
++
+             image_path = os.path.join(images_folder, image_name_ori+'.jpg')
+             image = Image.open(image_path)
+             resized_image_rgb = PILtoTensor(image)
+diff --git a/train.py b/train.py
+index 6619352..2b63899 100644
+--- a/train.py
++++ b/train.py
+@@ -38,6 +38,14 @@ if __name__ == "__main__":
+     parser.add_argument('--idname', type=str, default='id1_25', help='id name')
+     parser.add_argument('--image_res', type=int, default=512, help='image resolution')
+     parser.add_argument("--start_checkpoint", type=str, default = None)
++    parser.add_argument(
++        "--head_pose_aware", action="store_true",
++        help=(
++            "Use per-frame bbox metadata stored in each .frame file to shift the "
++            "camera principal point so Gaussians are placed at the detected head "
++            "position in the original frame instead of the crop center."
++        ),
++    )
+     args = parser.parse_args(sys.argv[1:])
+     args.device = "cuda"
+     lpt = lp.extract(args)
+@@ -62,7 +70,7 @@ if __name__ == "__main__":
+     os.makedirs(log_dir, exist_ok=True)
+     os.makedirs(train_dir, exist_ok=True)
+     os.makedirs(model_dir, exist_ok=True)
+-    scene = Scene_mica(data_dir, mica_datadir, train_type=0, white_background=lpt.white_background, device = args.device)
++    scene = Scene_mica(data_dir, mica_datadir, train_type=0, white_background=lpt.white_background, device = args.device, head_pose_aware=args.head_pose_aware)
+     
+     first_iter = 0
+     gaussians = GaussianModel(lpt.sh_degree)
+diff --git a/utils/flame_converter.py b/utils/flame_converter.py
+index 6ff5ec7..bb8734c 100644
+--- a/utils/flame_converter.py
++++ b/utils/flame_converter.py
+@@ -169,7 +169,12 @@ class TrackerConfig:
+ TRACKER_CONFIGS: dict[str, TrackerConfig] = {
+     "deca": TrackerConfig(name="DECA"),
+     "emoca": TrackerConfig(name="EMOCA"),
+-    "smirk": TrackerConfig(name="SMIRK"),
++    "smirk": TrackerConfig(
++        name="SMIRK",
++        shape_dim=300,
++        has_eyelids=True,
++        eyelids_key="eyelid",
++    ),
+     "spark": TrackerConfig(
+         name="SPARK",
+         shape_dim=300,
+@@ -218,6 +223,7 @@ class FlameConverter:
+         camera_K: Optional[torch.Tensor] = None,
+         camera_R: Optional[torch.Tensor] = None,
+         camera_t: Optional[torch.Tensor] = None,
++        head_pose_aware: bool = False,
+     ) -> dict:
+         """Convert a single-frame tracker output to FlashAvatar .frame dict.
+ 
+@@ -256,7 +262,12 @@ class FlameConverter:
+         if t.dim() == 1:
+             t = t.unsqueeze(0)
+ 
+-        return {
++        bbox_payload = self._extract_bbox_payload(tracker_output)
++
++        if head_pose_aware and bbox_payload is not None:
++            K = self._shift_K_to_bbox(K, bbox_payload, img_size)
++
++        frame_dict: dict = {
+             "flame": {
+                 "shape": shape,
+                 "exp": exp,
+@@ -271,6 +282,9 @@ class FlameConverter:
+             },
+             "img_size": img_size,
+         }
++        if bbox_payload is not None:
++            frame_dict["bbox"] = bbox_payload
++        return frame_dict
+ 
+     def convert_flame_params_only(
+         self,
+@@ -347,6 +361,74 @@ class FlameConverter:
+         return torch.zeros(1, self.FLASH_EYELIDS_DIM,
+                            device=self.device, dtype=torch.float32)
+ 
++    def _extract_bbox_payload(self, d: dict) -> Optional[dict]:
++        """Collect optional bbox metadata from a tracker output.
++
++        FLARE's extraction scripts may save extra keys describing where the
++        face was cropped from the original frame.  They are optional and this
++        returns ``None`` when none are present so legacy tracker outputs
++        still work.
++
++        Expected keys (any subset):
++            bbox_center    (2,)  center (cx, cy) in original image pixels
++            bbox_scale     (1,)  short side length of the crop in original px
++            img_size       (2,)  original frame size (W, H)
++            crop_bbox      (4,)  fixed crop rectangle (x1, y1, x2, y2) in
++                                  original image pixels
++            crop_img_size  (2,)  size (W, H) of the cropped image saved in
++                                  ``imgs/`` (i.e. what FlashAvatar renders)
++        """
++        bbox_keys = (
++            "bbox_center",
++            "bbox_scale",
++            "img_size",
++            "crop_bbox",
++            "crop_img_size",
++        )
++        payload: dict = {}
++        for key in bbox_keys:
++            if key in d and d[key] is not None:
++                payload[key] = d[key]
++        return payload if payload else None
++
++    def _shift_K_to_bbox(
++        self,
++        K: torch.Tensor,
++        bbox_payload: dict,
++        img_size: tuple[int, int],
++    ) -> torch.Tensor:
++        """Shift the principal point of ``K`` so the rendered head lines up
++        with the detected bbox center inside the fixed crop image.
++
++        The inputs are expressed in the *original* image coordinate system;
++        ``img_size`` is the rendered image size (matches FlashAvatar's
++        ``--image_res`` and the fixed-cropped ``imgs/`` pixels).  When the
++        fixed crop rectangle is supplied we map the bbox center into the
++        rendered image space; otherwise we leave ``K`` untouched.
++        """
++        if "bbox_center" not in bbox_payload:
++            return K
++        bbox_center = bbox_payload["bbox_center"].to(K.device).float()
++        crop_bbox = bbox_payload.get("crop_bbox")
++        crop_img_size = bbox_payload.get("crop_img_size")
++        if crop_bbox is None or crop_img_size is None:
++            return K
++
++        crop_bbox = crop_bbox.to(K.device).float()
++        crop_img_size = crop_img_size.to(K.device).float()
++        fx1, fy1, fx2, _ = crop_bbox.view(-1)[:4]
++        crop_w = (fx2 - fx1).clamp(min=1.0)
++        scale_x = float(img_size[0]) / float(crop_w)
++        scale_y = float(img_size[1]) / float(crop_w)  # square fixed crop
++
++        cx_crop = (bbox_center[0] - fx1) * scale_x
++        cy_crop = (bbox_center[1] - fy1) * scale_y
++
++        K_shifted = K.clone()
++        K_shifted[:, 0, 2] = cx_crop
++        K_shifted[:, 1, 2] = cy_crop
++        return K_shifted
++
+     def _convert_camera(
+         self, d: dict, img_size: tuple[int, int]
+     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+@@ -399,6 +481,14 @@ def main() -> None:
+         "--ext", default=".pkl,.pt,.pth",
+         help="Comma-separated file extensions to scan (default: .pkl,.pt,.pth).",
+     )
++    parser.add_argument(
++        "--head_pose_aware", action="store_true",
++        help=(
++            "Shift the principal point of K so the rendered head matches the "
++            "per-frame bbox center inside the fixed crop image. Requires the "
++            "tracker output to contain bbox_center / crop_bbox / crop_img_size."
++        ),
++    )
+     args = parser.parse_args()
+ 
+     w, h = (int(x) for x in args.img_size.split(","))
+@@ -420,7 +510,11 @@ def main() -> None:
+ 
+     for idx, path in enumerate(input_files):
+         tracker_output = _load_tracker_output(path)
+-        frame_dict = converter.convert(tracker_output, img_size=(w, h))
++        frame_dict = converter.convert(
++            tracker_output,
++            img_size=(w, h),
++            head_pose_aware=args.head_pose_aware,
++        )
+         out_path = args.output_dir / f"{idx:05d}.frame"
+         torch.save(frame_dict, str(out_path))
+ 

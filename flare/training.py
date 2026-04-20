@@ -102,6 +102,15 @@ class FlashAvatarSettings(BaseModel):
         default=True,
         description="既存チェックポイントを検出した場合、--start_checkpoint で再開する。",
     )
+    head_pose_aware: bool = Field(
+        default=False,
+        description=(
+            "頭部位置考慮モード。DECA/SMIRK のクロップ bbox 中心を元画像空間から "
+            "クロップ画像空間に写像し、Step 3 (.frame 変換) で K を、Step 4 "
+            "(FlashAvatar 学習) で world-view translation を補正して、"
+            "検出された頭部位置に Gaussian を配置する。"
+        ),
+    )
 
 
 class StageSettings(BaseModel):

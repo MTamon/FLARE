@@ -274,7 +274,14 @@ def main() -> None:
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     logger.info("動画フレーム数: {}, FPS: {:.1f}", total_frames, fps)
+
+    # 頭部位置考慮モード用のメタデータ (すべての .pt で共通)
+    orig_img_size_t = torch.tensor([orig_w, orig_h], dtype=torch.float32)
+    crop_bbox_t = torch.tensor(list(fixed_bbox), dtype=torch.float32)
+    crop_img_size_t = torch.tensor([args.img_size, args.img_size], dtype=torch.float32)
 
     last_good_codedict: dict[str, torch.Tensor] | None = None
     skipped_frames: list[int] = []
@@ -316,6 +323,21 @@ def main() -> None:
                 codedict = extractor.extract(image_tensor)
 
             codedict_cpu = {k: v.cpu() for k, v in codedict.items()}
+
+            # 頭部位置考慮モード用の per-frame メタデータ
+            bx1, by1, bx2, by2 = bbox
+            bbox_center = torch.tensor(
+                [(bx1 + bx2) / 2.0, (by1 + by2) / 2.0], dtype=torch.float32
+            )
+            bbox_scale = torch.tensor(
+                [float(min(bx2 - bx1, by2 - by1))], dtype=torch.float32
+            )
+            codedict_cpu["bbox_center"] = bbox_center
+            codedict_cpu["bbox_scale"] = bbox_scale
+            codedict_cpu["img_size"] = orig_img_size_t.clone()
+            codedict_cpu["crop_bbox"] = crop_bbox_t.clone()
+            codedict_cpu["crop_img_size"] = crop_img_size_t.clone()
+
             torch.save(codedict_cpu, str(pt_path))
             last_good_codedict = codedict_cpu
 
