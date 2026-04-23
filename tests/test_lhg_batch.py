@@ -135,7 +135,9 @@ class MockFaceDetector:
         frame: np.ndarray,
         bbox: tuple[int, int, int, int],
         size: int = 224,
+        margin_scale: float = 1.0,
     ) -> np.ndarray:
+        del margin_scale  # mock では未使用 (実装側のシグネチャ互換のみ確認)
         x1, y1, x2, y2 = bbox
         cropped = frame[max(0, y1) : y2, max(0, x1) : x2]
         if cropped.size == 0:

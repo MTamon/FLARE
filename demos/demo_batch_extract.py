@@ -209,7 +209,9 @@ def _process_video(
             bbox = face_detector.detect(frame_bgr)
             if bbox is None:
                 raise RuntimeError("顔を検出できませんでした")
-            cropped = face_detector.crop_and_align(frame_bgr, bbox, size=224)
+            cropped = face_detector.crop_and_align(
+                frame_bgr, bbox, size=224, margin_scale=1.25
+            )
             tensor = _bgr_to_tensor(cropped, device)
             with torch.no_grad():
                 params = extractor.extract(tensor)

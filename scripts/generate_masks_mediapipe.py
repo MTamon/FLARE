@@ -120,15 +120,17 @@ def _generate_neckhead_mask(
 def _generate_mouth_mask(
     landmarks, w: int, h: int, dilate_px: int = 4
 ) -> np.ndarray:
-    """口唇ランドマークから口の内部マスクを生成する。
+    """口唇ランドマークから口の内部 (開口部) マスクを生成する。
+
+    上下唇の skin を含めずに、上唇内側 + 下唇内側で囲まれる領域 (開口部) のみを
+    マスクとする。これは FlashAvatar の mouth loss で口唇皮膚のテクスチャを
+    マスクから外し、開口部の影や歯のレンダリング誤差にだけ重みを付けるため。
 
     Returns:
         (h, w) uint8 binary mask [0 or 255]
     """
     mask = np.zeros((h, w), dtype=np.uint8)
     inner_pts = _landmarks_to_points(landmarks, w, h, _LIPS_INNER_IDX)
-    outer_pts = _landmarks_to_points(landmarks, w, h, _LIPS_OUTER_IDX)
-
     hull_inner = cv2.convexHull(inner_pts)
 
     cv2.fillPoly(mask, [hull_inner], 255)

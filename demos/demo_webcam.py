@@ -350,7 +350,9 @@ def main() -> None:
                 # --- SMIRK ---
                 t0 = time.perf_counter()
                 try:
-                    cropped = face_detector.crop_and_align(frame, bbox, size=224)
+                    cropped = face_detector.crop_and_align(
+                        frame, bbox, size=224, margin_scale=1.25
+                    )
                     rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                     tensor = (
                         torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.0)
