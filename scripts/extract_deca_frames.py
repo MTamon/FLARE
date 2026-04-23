@@ -116,6 +116,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="最大処理フレーム数 (デバッグ用)",
     )
+    p.add_argument(
+        "--target_fps",
+        type=float,
+        default=None,
+        help=(
+            "出力フレームレート (fps)。元動画より低い値を指定するとフレームを間引く。"
+            "省略時は全フレームを処理。FlashAvatar 論文設定に合わせるなら 25 を推奨。"
+        ),
+    )
     return p.parse_args()
 
 
@@ -249,6 +258,7 @@ def main() -> None:
     logger.info("img_size    : {}", args.img_size)
     logger.info("fixed_margin: {}  (Phase 0 imgs/ クロップ)", args.fixed_margin)
     logger.info("deca_margin : {}  (per-frame DECA 入力)", args.deca_margin)
+    logger.info("target_fps : {}", args.target_fps if args.target_fps else "全フレーム (間引きなし)")
 
     # モデルのロード
     extractor, face_detector = _load_extractor_and_detector(
@@ -273,20 +283,80 @@ def main() -> None:
         sys.exit(1)
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    logger.info("動画フレーム数: {}, FPS: {:.1f}", total_frames, fps)
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    if source_fps <= 0:
+        source_fps = 30.0
+    logger.info("動画フレーム数: {}, 元 FPS: {:.1f}", total_frames, source_fps)
+
+    # ---- 固定クロップ bbox キャリブレーション (先頭最大 30 フレームの中央値) ----
+    # FlashAvatar は固定クロップを前提とする。per-frame tracking crop だと
+    # cam パラメータの座標系がフレームごとに変わり 3DGS 学習が不安定になる。
+    _CALIB_FRAMES = 30
+    _calib_bboxes: list[tuple[int, int, int, int]] = []
+    _calib_read = 0
+    while _calib_read < _CALIB_FRAMES:
+        ret, _frame = cap.read()
+        if not ret:
+            break
+        _b = face_detector.detect(_frame)
+        if _b is not None:
+            _calib_bboxes.append(_b)
+        _calib_read += 1
+
+    if not _calib_bboxes:
+        logger.error(
+            "固定クロップ用の顔検出に失敗しました (先頭 {} フレームで顔を検出できず)。",
+            _CALIB_FRAMES,
+        )
+        sys.exit(1)
+
+    fixed_bbox: tuple[int, int, int, int] = tuple(  # type: ignore[assignment]
+        int(v) for v in np.median(np.array(_calib_bboxes), axis=0)
+    )
+    logger.info(
+        "固定クロップ bbox: {} (先頭 {} フレームの中央値)",
+        fixed_bbox, len(_calib_bboxes),
+    )
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    # FPS サブサンプリング設定
+    # floor(raw_idx * target_fps / source_fps) が前フレームから増加したときだけ採用する。
+    target_fps = args.target_fps
+    if target_fps is not None and target_fps >= source_fps:
+        logger.warning(
+            "target_fps ({:.1f}) が元 FPS ({:.1f}) 以上のため間引きをスキップします",
+            target_fps, source_fps,
+        )
+        target_fps = None
 
     last_good_codedict: dict[str, torch.Tensor] | None = None
     skipped_frames: list[int] = []
     carry_forward_frames: list[int] = []
 
-    frame_idx = 0
+    raw_idx = 0       # 元動画のフレーム通し番号 (読み込み順)
+    frame_idx = 0     # 出力インデックス (deca_outputs / .frame のインデックス, 0-indexed)
     processed = 0
     max_frames = args.max_frames or total_frames
 
+    import math
+
     while True:
         ret, frame_bgr = cap.read()
-        if not ret or frame_idx >= max_frames:
+        if not ret:
+            break
+
+        # FPS サブサンプリング: このフレームを採用するか判定
+        if target_fps is not None:
+            keep = math.floor(raw_idx * target_fps / source_fps) > math.floor(
+                (raw_idx - 1) * target_fps / source_fps
+            )
+            raw_idx += 1
+            if not keep:
+                continue
+        else:
+            raw_idx += 1
+
+        if frame_idx >= max_frames:
             break
 
         # ---- imgs/ への保存 (固定クロップ + img_size リサイズ) ----
@@ -320,6 +390,7 @@ def main() -> None:
             last_good_codedict = codedict_cpu
 
         except Exception as e:
+            # DECA 推論エラー → キャリーフォワード
             if last_good_codedict is not None:
                 torch.save(last_good_codedict, str(pt_path))
                 carry_forward_frames.append(frame_idx)
@@ -364,6 +435,9 @@ def main() -> None:
     log = {
         "video": str(args.video),
         "total_extracted": frame_idx,
+        "source_fps": source_fps,
+        "target_fps": args.target_fps,
+        "total_raw_frames_scanned": raw_idx,
         "skipped_frames": skipped_frames,
         "carry_forward_frames": carry_forward_frames,
         "img_size": args.img_size,

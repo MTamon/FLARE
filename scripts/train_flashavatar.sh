@@ -23,6 +23,7 @@
 #   --video           入力動画ファイルパス                        [必須]
 #   --device          CUDA デバイス (例: cuda:0)                  [既定: cuda:0]
 #   --img_size        フレーム解像度 (px)                         [既定: 512]
+#   --fps             出力フレームレート。論文設定に合わせるなら 25  [既定: 全フレーム]
 #   --iterations      FlashAvatar 学習イテレーション数             [既定: 30000]
 #   --model_path      DECA チェックポイントパス                    [既定: checkpoints/deca/deca_model.tar]
 #   --deca_dir        DECA リポジトリパス                          [既定: third_party/DECA]
@@ -42,6 +43,7 @@ ID_NAME=""
 VIDEO=""
 DEVICE="cuda:0"
 IMG_SIZE=512
+TARGET_FPS=""
 ITERATIONS=30000
 MODEL_PATH="./checkpoints/deca/deca_model.tar"
 DECA_DIR="./third_party/DECA"
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --video)        VIDEO="$2";        shift 2 ;;
         --device)       DEVICE="$2";       shift 2 ;;
         --img_size)     IMG_SIZE="$2";     shift 2 ;;
+        --fps)          TARGET_FPS="$2";   shift 2 ;;
         --iterations)   ITERATIONS="$2";   shift 2 ;;
         --model_path)   MODEL_PATH="$2";   shift 2 ;;
         --deca_dir)     DECA_DIR="$2";     shift 2 ;;
@@ -105,6 +108,8 @@ echo "======================================================================"
 echo "  ID        : $ID_NAME"
 echo "  VIDEO     : ${VIDEO:-（スキップ）}"
 echo "  DEVICE    : $DEVICE"
+echo "  IMG_SIZE  : $IMG_SIZE"
+echo "  FPS       : ${TARGET_FPS:-全フレーム (間引きなし)}"
 echo "  ITERS     : $ITERATIONS"
 echo "  DATA_DIR  : $DATA_DIR"
 echo "  FA_DIR    : $FA_ABS"
@@ -164,13 +169,19 @@ if [[ "$SKIP_EXTRACT" = false ]]; then
     echo "         出力先  : $DATA_DIR"
     echo ""
 
+    FPS_ARG=""
+    if [[ -n "$TARGET_FPS" ]]; then
+        FPS_ARG="--target_fps $TARGET_FPS"
+    fi
+
     python scripts/extract_deca_frames.py \
         --video "$VIDEO" \
         --out_dir "$DATA_DIR" \
         --model_path "$MODEL_PATH" \
         --deca_dir "$DECA_DIR" \
         --device "$DEVICE" \
-        --img_size "$IMG_SIZE"
+        --img_size "$IMG_SIZE" \
+        $FPS_ARG
 
     echo ""
     echo "[Step 1] 完了"

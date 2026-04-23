@@ -6,13 +6,12 @@ per-frame の .pt ファイルとして保存する。出力ファイルは Flas
 FlameConverter (``--tracker smirk``) が直接読み込める形式。
 
 ディレクトリ構成 (出力):
-    <out_dir>/imgs/00001.jpg          # 1-indexed フレーム画像 (固定クロップ)
+    <out_dir>/imgs/00001.jpg          # 1-indexed フレーム画像
     <out_dir>/imgs/00002.jpg
     ...
     <out_dir>/smirk_outputs/00000.pt  # 0-indexed SMIRK 出力 (.pt)
     <out_dir>/smirk_outputs/00001.pt
     ...
-    <out_dir>/crop_region.json        # 固定クロップ領域 (デバッグ用)
     <out_dir>/extract_log.json        # 処理ログ (スキップフレーム等)
 
 インデックスのずれ (frame_delta=1):
